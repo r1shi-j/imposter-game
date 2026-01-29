@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Impostor Game</title>
+</head>
+<body>
+  <h1>Impostor Game</h1>
+  <button id="ping">Ping backend</button>
+  <pre id="output"></pre>
+
+  <script>
+    const BACKEND_URL = "https://YOUR-BACKEND-URL.onrender.com";
+
+    document.getElementById("ping").onclick = async () => {
+      const res = await fetch(BACKEND_URL);
+      const data = await res.json();
+      document.getElementById("output").textContent =
+        JSON.stringify(data, null, 2);
+    };
+  </script>
+</body>
+</html>
