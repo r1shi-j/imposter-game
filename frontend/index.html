@@ -19,16 +19,26 @@
         log.textContent += msg + "\n";
     }
 
+    let socket = null;
+
     document.getElementById("connect").onclick = () => {
-        const socket = io(BACKEND_URL);
+    if (socket) return; // already connected
 
-        socket.on("connect", () => {
+    socket = io(BACKEND_URL, {
+        transports: ["websocket"], // important, see below
+    });
+
+    document.getElementById("connect").disabled = true;
+
+    socket.on("connect", () => {
         write("✅ Connected to server");
-        });
+    });
 
-        socket.on("disconnect", () => {
+    socket.on("disconnect", () => {
         write("❌ Disconnected from server");
-        });
+        socket = null;
+        document.getElementById("connect").disabled = false;
+    });
     };
     </script>
 </body>
