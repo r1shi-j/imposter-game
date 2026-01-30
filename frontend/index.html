@@ -7,39 +7,36 @@
 <body>
     <h1>Impostor Game</h1>
 
-    <button id="connect">Connect to server</button>
-    <pre id="log"></pre>
+    <input id="name" placeholder="Enter your name" />
+    <button id="join">Join</button>
+
+    <h3>Players</h3>
+    <ul id="players"></ul>
 
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <script>
     const BACKEND_URL = "https://imposter-backend-ch3h.onrender.com";
-    const log = document.getElementById("log");
+    const playersList = document.getElementById("players");
+    const joinBtn = document.getElementById("join");
 
-    function write(msg) {
-        log.textContent += msg + "\n";
-    }
+    let socket = io(BACKEND_URL, { transports: ["websocket"] });
 
-    let socket = null;
+    joinBtn.onclick = () => {
+        const name = document.getElementById("name").value.trim();
+        if (!name) return;
 
-    document.getElementById("connect").onclick = () => {
-    if (socket) return; // already connected
-
-    socket = io(BACKEND_URL, {
-        transports: ["websocket"], // important, see below
-    });
-
-    document.getElementById("connect").disabled = true;
-
-    socket.on("connect", () => {
-        write("✅ Connected to server");
-    });
-
-    socket.on("disconnect", () => {
-        write("❌ Disconnected from server");
-        socket = null;
-        document.getElementById("connect").disabled = false;
-    });
+        socket.emit("join", { name });
+        joinBtn.disabled = true;
     };
+
+    socket.on("players_update", (players) => {
+        playersList.innerHTML = "";
+        players.forEach(p => {
+        const li = document.createElement("li");
+        li.textContent = p;
+        playersList.appendChild(li);
+        });
+    });
     </script>
 </body>
 </html>
