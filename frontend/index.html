@@ -13,6 +13,10 @@
     <h3>Players</h3>
     <ul id="players"></ul>
 
+    <button id="startBtn" onclick="startGame()" style="display:none">
+        Start Game
+    </button>
+
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <script>
     const BACKEND_URL = "https://imposter-backend-ch3h.onrender.com";
@@ -36,6 +40,22 @@
         li.textContent = p;
         playersList.appendChild(li);
         });
+    });
+
+    let isHost = false;
+
+    socket.on("host_update", data => {
+    isHost = data.host;
+    document.getElementById("startBtn").style.display =
+        isHost ? "block" : "none";
+    });
+
+    function startGame() {
+        socket.emit("start_game");
+    }
+
+    socket.on("role", data => {
+        alert("Your role: " + data.role);
     });
     </script>
 </body>
