@@ -8,6 +8,7 @@ CORS(app)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
 
 players = {}
+HOST_PASSWORD = "RJANS"
 host_sid = None
 game_started = False
 
@@ -17,14 +18,37 @@ def home():
 
 @socketio.on("connect")
 def handle_connect():
-    global host_sid
-    if host_sid is None:
-        host_sid = request.sid
-        socketio.emit("host_update", {"host": True})
-    else:
-        socketio.emit("host_update", {"host": False}, to=request.sid)
+    print("Client connected", request.sid)
 
-    print("Client connected")
+@socketio.on("disconnect")
+def handle_disconnect():
+    global host_sid, game_started
+
+    players.pop(request.sid, None)
+
+    if request.sid == host_sid:
+        host_sid = None
+        game_started = False
+
+    socketio.emit("players_update", list(players.values()))
+
+@socketio.on("host_login")
+def host_login(data):
+    global host_sid
+
+    if host_sid is not None:
+        socketio.emit(
+            "host_login_result",
+            {"success": False, "error": "Host already assigned"},
+            to=request.sid
+        )
+        return
+
+    if data.get("password") == HOST_PASSWORD:
+        host_sid = request.sid
+        socketio.emit("host_login_result", {"success": True}, to=request.sid)
+    else:
+        socketio.emit("host_login_result", {"success": False}, to=request.sid)
 
 @socketio.on("join")
 def handle_join(data):
@@ -33,17 +57,6 @@ def handle_join(data):
 
     socketio.emit("players_update", list(players.values()))
     print(f"{name} joined")
-
-@socketio.on("disconnect")
-def handle_disconnect():
-    global host_sid
-    name = players.pop(request.sid, None)
-
-    if request.sid == host_sid:
-        host_sid = None
-        game_started = False
-
-    socketio.emit("players_update", list(players.values()))
 
 @socketio.on("start_game")
 def start_game():

@@ -13,7 +13,12 @@
     <h3>Players</h3>
     <ul id="players"></ul>
 
-    <button id="startBtn" onclick="startGame()" style="display:none">
+    <div style="position:fixed;top:10px;right:10px">
+        <input id="hostPass" type="password" placeholder="Host password">
+        <button onclick="hostLogin()">Login</button>
+    </div>
+
+    <button id="startBtn" style="display:none" onclick="startGame()">
         Start Game
     </button>
 
@@ -24,6 +29,21 @@
     const joinBtn = document.getElementById("join");
 
     let socket = io(BACKEND_URL, { transports: ["websocket"] });
+
+    function hostLogin() {
+        socket.emit("host_login", {
+            password: document.getElementById("hostPass").value
+        });
+    }
+
+    socket.on("host_login_result", data => {
+        if (data.success) {
+            document.getElementById("startBtn").style.display = "block";
+            alert("Logged in as host");
+        } else {
+            alert("Wrong password");
+        }
+    });
 
     joinBtn.onclick = () => {
         const name = document.getElementById("name").value.trim();
@@ -36,18 +56,10 @@
     socket.on("players_update", (players) => {
         playersList.innerHTML = "";
         players.forEach(p => {
-        const li = document.createElement("li");
-        li.textContent = p;
-        playersList.appendChild(li);
+            const li = document.createElement("li");
+            li.textContent = p;
+            playersList.appendChild(li);
         });
-    });
-
-    let isHost = false;
-
-    socket.on("host_update", data => {
-    isHost = data.host;
-    document.getElementById("startBtn").style.display =
-        isHost ? "block" : "none";
     });
 
     function startGame() {
