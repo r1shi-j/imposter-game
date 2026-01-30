@@ -1,230 +1,175 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8" />
     <title>Impostor Game</title>
     <style>
-        #lobby, #waiting, #game { 
-            display: none;
-        }
-        #players li {
-            margin-bottom: 4px;
-        }
-        button {
-            margin: 5px 0;
-        }
+        button { margin: 5px; }
+        #topRight { position: fixed; top: 10px; right: 10px; }
     </style>
 </head>
 <body>
-    <h1>Impostor Game</h1>
-    <div id="login">
-        <h3 id="loginMessage">Waiting for host…</h3>
-        <input id="name" placeholder="Enter your name" autocomplete="off" style="display:none" />
-        <button id="join" style="display:none">Join</button>
-    </div>
 
-    <div id="lobby">
-        <h3>Lobby</h3>
-        <ul id="players"></ul>
-        <button id="leaveLobby">Leave Lobby</button>
-    </div>
+<h2 id="title">Waiting for host…</h2>
 
-    <div id="waiting">
-        <h3>Waiting for game to start...</h3>
-        <ul id="playersWaiting"></ul>
-        <button id="leaveWaiting">Leave Lobby</button>
-    </div>
+<div id="topRight"></div>
 
-    <div id="game">
-        <h3>Game Started</h3>
-        <p id="roleDisplay"></p>
-        <button id="endGame">End Session</button>
-    </div>
+<div id="hostLogin">
+    <input id="hostPass" type="password" placeholder="Host password">
+    <button onclick="hostLogin()">Login as Host</button>
+</div>
 
-    <div id="loginHost" style="position:fixed;top:10px;right:10px">
-        <input id="hostPass" type="password" placeholder="Host password" autocomplete="off" />
-        <button id="hostLoginBtn">Host Login</button>
-        <button id="startBtn" style="display:none">Start Game</button>
-    </div>
+<div id="joinArea" style="display:none">
+    <input id="name" placeholder="Your name">
+    <button onclick="join()">Join</button>
+</div>
 
-    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
-    <script>
-        const BACKEND_URL = location.hostname === "localhost" ? "http://localhost:5001" : "https://imposter-backend-ch3h.onrender.com";
-        const socket = io(BACKEND_URL);
+<ul id="players"></ul>
 
-        const loginDiv = document.getElementById("login");
-        const lobbyDiv = document.getElementById("lobby");
-        const waitingDiv = document.getElementById("waiting");
-        const gameDiv = document.getElementById("game");
-        const loginHostDiv = document.getElementById("loginHost");
+<button id="startGame" style="display:none" onclick="startGame()">Start Game</button>
 
-        const nameInput = document.getElementById("name");
-        const joinBtn = document.getElementById("join");
-        const playersList = document.getElementById("players");
-        const playersWaitingList = document.getElementById("playersWaiting");
-        const leaveLobbyBtn = document.getElementById("leaveLobby");
-        const leaveWaitingBtn = document.getElementById("leaveWaiting");
-        const roleDisplay = document.getElementById("roleDisplay");
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<script>
+const BACKEND_URL = location.hostname === "localhost"
+    ? "http://localhost:5001"
+    : "https://imposter-backend-ch3h.onrender.com";
 
-        const hostPassInput = document.getElementById("hostPass");
-        const hostLoginBtn = document.getElementById("hostLoginBtn");
-        const startBtn = document.getElementById("startBtn");
+let hostToken = localStorage.getItem("hostToken");
+let playerId = localStorage.getItem("playerId");
 
-        const endGameBtn = document.getElementById("endGame");
+const socket = io(BACKEND_URL, {
+    query: {
+        token: hostToken,
+        playerId: playerId
+    }
+});
 
-        let playerId = localStorage.getItem("playerId") || null;
-        let currentState = "login"; // login, lobby, waiting, game
-        let isHost = false;
-        isHost = localStorage.getItem("isHost") === "true";
+let isHost = false;
+let hasJoined = false;
 
-        if (isHost && playerId) {
-            socket.emit("reclaim_host", { playerId });
+socket.on("identity_update", data => {
+    isHost = data.isHost;
+    hasJoined = data.hasJoined;
+
+    if (hasJoined) {
+        document.getElementById("joinArea").style.display = "none";
+    }
+});
+
+function renderPlayers(players) {
+    const ul = document.getElementById("players");
+    ul.innerHTML = "";
+    players.forEach(p => {
+        const li = document.createElement("li");
+        li.textContent = p.name;
+        ul.appendChild(li);
+    });
+}
+
+function hostLogin() {
+    socket.emit("host_login", { password: document.getElementById("hostPass").value });
+}
+
+function join() {
+    if (hasJoined) return;
+
+    const name = document.getElementById("name").value.trim();
+    if (!name) return;
+
+    socket.emit("join", { name, playerId });
+}
+
+function leave() {
+    localStorage.removeItem("playerId");
+    hasJoined = false;
+    socket.emit("leave");
+    location.reload();
+}
+
+function startGame() {
+    socket.emit("start_game");
+}
+
+socket.on("host_login_result", data => {
+    if (!data.success) return alert("Host login failed");
+
+    localStorage.setItem("hostToken", data.token);
+    location.reload();
+});
+
+socket.on("join_result", data => {
+    if (!data.success) return;
+
+    hasJoined = true;
+    localStorage.setItem("playerId", data.playerId);
+
+    document.getElementById("name").value = "";
+    document.getElementById("joinArea").style.display = "none";
+    // Only update topRight to show Leave button if NOT host
+    if (!isHost) {
+        const top = document.getElementById("topRight");
+        top.innerHTML = "<button onclick='leave()'>Leave</button>";
+    }
+
+    // Host re-joining after reset must re-show Start Game
+    if (isHost) {
+        document.getElementById("startGame").style.display = "block";
+    }
+});
+
+socket.on("state_update", data => {
+    if (!data.hostExists) {
+        localStorage.removeItem("playerId");
+        localStorage.removeItem("hostToken");
+        hasJoined = false;
+        // Clear players list
+        document.getElementById("players").innerHTML = "";
+        // Hide start game button
+        document.getElementById("startGame").style.display = "none";
+        // Clear topRight explicitly when no host exists
+        document.getElementById("topRight").innerHTML = "";
+    }
+
+    const hostLogin = document.getElementById("hostLogin");
+    const joinArea = document.getElementById("joinArea");
+    const startBtn = document.getElementById("startGame");
+    const title = document.getElementById("title");
+    const top = document.getElementById("topRight");
+
+    title.textContent =
+        data.state === "waiting" ? "Waiting for host…" :
+        data.state === "lobby" ? "Lobby" : "Game Started";
+
+    // Host login
+    hostLogin.style.display =
+        data.hostExists ? "none" : "block";
+
+    // Name entry:
+    // - visible for ALL clients once host exists
+    // - hidden after that client has joined
+    if (data.hostExists && !hasJoined) {
+        joinArea.style.display = "block";
+    } else {
+        joinArea.style.display = "none";
+    }
+
+    // Start game
+    startBtn.style.display =
+        (isHost && hasJoined && data.state === "lobby") ? "block" : "none";
+
+    // Top-right controls
+    if (data.hostExists) {
+        top.innerHTML = "";
+        if (isHost) {
+            top.innerHTML = "<b>Host</b> <button onclick='socket.emit(\"end_session\")'>End Session</button>";
+        } else if (hasJoined) {
+            top.innerHTML = "<button onclick='leave()'>Leave</button>";
         }
+    }
+});
 
-        function setState(state) {
-            currentState = state;
-            loginDiv.style.display = state === "login" ? "block" : "none";
-            lobbyDiv.style.display = state === "lobby" ? "block" : "none";
-            waitingDiv.style.display = state === "waiting" ? "block" : "none";
-            gameDiv.style.display = state === "game" ? "block" : "none";
-        }
-
-        function setJoinEnabled(enabled) {
-            document.getElementById("loginMessage").textContent =
-                enabled ? "Enter your name to join" : "Waiting for host…";
-            nameInput.style.display = enabled ? "inline-block" : "none";
-            joinBtn.style.display = enabled ? "inline-block" : "none";
-        }
-
-        function renderPlayers(players, container) {
-            container.innerHTML = "";
-            players.forEach(p => {
-                const li = document.createElement("li");
-                li.textContent = p.name + (p.player_id === playerId ? " (You)" : "");
-                container.appendChild(li);
-            });
-        }
-
-        function joinGame(name) {
-            socket.emit("join", { name, playerId });
-        }
-
-        function leaveGame() {
-            socket.emit("leave");
-            localStorage.removeItem("playerId");
-            playerId = null;
-            setState("login");
-            joinBtn.disabled = false;
-            nameInput.value = "";
-        }
-
-        joinBtn.onclick = () => {
-            if (currentState !== "login" || nameInput.style.display === "none") return;
-            const name = nameInput.value.trim();
-            if (!name) return;
-            joinBtn.disabled = true;
-            joinGame(name);
-        };
-
-        leaveLobbyBtn.onclick = leaveGame;
-        leaveWaitingBtn.onclick = leaveGame;
-        endGameBtn.onclick = () => {
-            if (isHost) {
-                socket.emit("end_session");
-                localStorage.clear();
-                location.reload();
-            } else {
-                leaveGame();
-            }
-        };
-
-        hostLoginBtn.onclick = () => {
-            socket.emit("host_login", { password: hostPassInput.value });
-        };
-
-        startBtn.onclick = () => {
-            socket.emit("start_game");
-        };
-
-        socket.on("join_result", data => {
-            if (data.success) {
-                playerId = data.playerId;
-                localStorage.setItem("playerId", playerId);
-                if (data.state === "lobby") {
-                    setState("lobby");
-                    renderPlayers(data.players, playersList);
-                } else if (data.state === "waiting") {
-                    setState("waiting");
-                    renderPlayers(data.players, playersWaitingList);
-                } else if (data.state === "game") {
-                    setState("game");
-                    roleDisplay.textContent = "Your role: " + data.role;
-                }
-            } else {
-                alert(data.message || "Failed to join");
-                joinBtn.disabled = false;
-            }
-        });
-
-        socket.on("players_update", data => {
-            if (currentState === "lobby") {
-                renderPlayers(data.players, playersList);
-            } else if (currentState === "waiting") {
-                renderPlayers(data.players, playersWaitingList);
-            }
-        });
-
-        socket.on("game_started", () => {
-            setState("game");
-        });
-
-        socket.on("role", data => {
-            roleDisplay.textContent = "Your role: " + data.role;
-        });
-
-        socket.on("host_login_result", data => {
-            if (data.success) {
-                isHost = true;
-                localStorage.setItem("isHost", "true");
-                startBtn.style.display = "inline-block";
-                alert("Logged in as host");
-                loginHostDiv.style.display = "block";
-                if (data.player_id) {
-                    playerId = data.player_id;
-                    localStorage.setItem("playerId", playerId);
-                }
-                socket.emit("request_state");
-            } else {
-                alert("Wrong password or host already exists");
-            }
-        });
-
-        socket.on("state_update", data => {
-            const state = data.state;
-
-            if (state === "waiting") {
-                setState("login");
-                setJoinEnabled(false);
-                loginHostDiv.style.display = "block";
-            }
-
-            if (state === "lobby") {
-                setState("login");
-                setJoinEnabled(true);
-                loginHostDiv.style.display = isHost ? "block" : "none";
-            }
-
-            if (state === "game") {
-                setState("game");
-                loginHostDiv.style.display = "none";
-                if (isHost) startBtn.style.display = "none";
-            }
-        });
-
-        setState("login");
-        if (playerId) {
-            socket.emit("join", { playerId });
-        }
-    </script>
+socket.on("players_update", data => {
+    renderPlayers(data.players);
+});
+</script>
 </body>
 </html>

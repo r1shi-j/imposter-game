@@ -7,71 +7,82 @@ import uuid
 app = Flask(__name__)
 CORS(app)
 
-socketio = SocketIO(
-    app,
-    cors_allowed_origins="*",
-    async_mode="threading"
-)
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 HOST_PASSWORD = "RJANS"
 
-# ---- Global state ----
-players = {}  # player_id -> { "sid": str | None, "name": str }
-host_player_id = None   # persistent host identity
-session_state = "waiting"  # waiting | lobby | game
+players = {}   # player_id -> {sid, name}
+host_token = None
+host_sid = None
+state = "waiting"  # waiting | lobby | game
 
 
-@app.route("/")
-def home():
-    return {"message": "Socket.IO backend alive 🚀"}
+def get_player_by_sid(sid):
+    for pid, p in players.items():
+        if p["sid"] == sid:
+            return pid
+    return None
 
 
-# ---- Helpers ----
 def emit_state():
-    socketio.emit("state_update", {"state": session_state})
+    socketio.emit("state_update", {
+        "state": state,
+        "hostExists": host_token is not None
+    })
 
 
 def emit_players():
     socketio.emit("players_update", {
         "players": [
-            {"player_id": pid, "name": p["name"]}
+            {
+                "player_id": pid,
+                "name": p["name"]
+            }
             for pid, p in players.items()
-            if p["sid"] is not None
+            if p["sid"] is not None and p["name"] is not None
         ]
     })
 
 
-def reset_session():
-    global players, host_player_id, session_state
-    players.clear()
-    host_player_id = None
-    session_state = "waiting"
-    emit_state()
-    emit_players()
-
-
-# ---- Socket events ----
 @socketio.on("connect")
-def handle_connect():
+def connect():
+    token = request.args.get("token")
+    pid = request.args.get("playerId")
+
+    is_host = token is not None and token == host_token
+
+    if is_host:
+        global host_sid
+        host_sid = request.sid
+
+    if pid in players:
+        players[pid]["sid"] = request.sid
+        has_joined = True
+    else:
+        has_joined = False
+
+    socketio.emit("identity_update", {
+        "isHost": is_host,
+        "hasJoined": has_joined
+    }, to=request.sid)
+
     emit_state()
     emit_players()
 
 
 @socketio.on("disconnect")
-def handle_disconnect():
-    for pid, pdata in players.items():
-        if pdata["sid"] == request.sid:
-            pdata["sid"] = None
-            print(f"{pdata['name']} disconnected")
-            break
+def disconnect():
+    for p in players.values():
+        if p["sid"] == request.sid:
+            p["sid"] = None
     emit_players()
 
 
 @socketio.on("host_login")
 def host_login(data):
-    global host_player_id, session_state
+    global host_token, host_sid, state
 
-    if host_player_id is not None:
+    if host_token is not None:
         socketio.emit("host_login_result", {"success": False}, to=request.sid)
         return
 
@@ -79,137 +90,100 @@ def host_login(data):
         socketio.emit("host_login_result", {"success": False}, to=request.sid)
         return
 
-    host_player_id = str(uuid.uuid4())
-    players[host_player_id] = {
-        "sid": request.sid,
-        "name": "Host"
-    }
+    host_token = str(uuid.uuid4())
+    host_sid = request.sid
+    state = "lobby"
 
-    session_state = "lobby"
-
-    socketio.emit(
-        "host_login_result",
-        {"success": True, "player_id": host_player_id},
-        to=request.sid
-    )
+    socketio.emit("host_login_result", {
+        "success": True,
+        "token": host_token
+    }, to=request.sid)
 
     emit_state()
-    emit_players()
-
-
-@socketio.on("reclaim_host")
-def reclaim_host(data):
-    global host_player_id
-
-    pid = data.get("playerId")
-    if pid and pid == host_player_id and pid in players:
-        players[pid]["sid"] = request.sid
-        socketio.emit("host_login_result", {"success": True}, to=request.sid)
-        emit_players()
 
 
 @socketio.on("join")
 def join(data):
-    if session_state == "waiting":
-        socketio.emit("join_result", {
-            "success": False,
-            "message": "Waiting for host"
-        }, to=request.sid)
-        return
+    global players
 
     pid = data.get("playerId")
-    name = data.get("name")
-
-    # Refresh reconnect
-    if pid and pid in players:
+    if pid in players:
         players[pid]["sid"] = request.sid
         socketio.emit("join_result", {
             "success": True,
             "playerId": pid,
-            "state": session_state
+            "state": state,
+            "isHost": False,
+            "restored": True
         }, to=request.sid)
         emit_players()
         return
 
+    if state == "waiting":
+        socketio.emit("join_result", {"success": False}, to=request.sid)
+        return
+
+    name = data.get("name")
+
     if not name:
-        socketio.emit("join_result", {
-            "success": False,
-            "message": "Name required"
-        }, to=request.sid)
+        socketio.emit("join_result", {"success": False}, to=request.sid)
         return
 
     pid = str(uuid.uuid4())
-    players[pid] = {"sid": request.sid, "name": name}
+    players[pid] = {
+        "sid": request.sid,
+        "name": name
+    }
 
     socketio.emit("join_result", {
         "success": True,
         "playerId": pid,
-        "state": session_state
+        "state": state,
+        "isHost": False
     }, to=request.sid)
 
     emit_players()
 
 
 @socketio.on("leave")
-def leave(data):
-    pid = data.get("player_id")
-    if pid in players:
-        del players[pid]
+def leave():
+    # Find player by sid and remove
+    pid_to_remove = None
+    for pid, p in players.items():
+        if p["sid"] == request.sid:
+            pid_to_remove = pid
+            break
+    if pid_to_remove:
+        del players[pid_to_remove]
         emit_players()
-
-
-@socketio.on("kick")
-def kick(data):
-    if host_player_id is None or players.get(host_player_id, {}).get("sid") != request.sid:
-        return
-
-    pid = data.get("player_id")
-    if pid in players:
-        del players[pid]
-        socketio.emit("kicked", {"player_id": pid})
-        emit_players()
+        emit_state()
 
 
 @socketio.on("start_game")
 def start_game():
-    global session_state
-
-    if host_player_id is None or players.get(host_player_id, {}).get("sid") != request.sid:
+    global state
+    if request.sid != host_sid:
         return
-
-    if session_state != "lobby":
+    # host must be a player
+    if get_player_by_sid(request.sid) is None:
         return
-
-    active_players = [
-        pid for pid, p in players.items() if p["sid"] is not None
-    ]
-
-    if len(active_players) < 2:
+    # minimum 3 players
+    if len(players) < 3:
         return
-
-    session_state = "game"
+    state = "game"
     emit_state()
-
-    impostor = random.choice(active_players)
-
-    for pid, pdata in players.items():
-        if pdata["sid"] is None:
-            continue
-        role = "impostor" if pid == impostor else "crew"
-        socketio.emit("role", {"role": role}, to=pdata["sid"])
 
 
 @socketio.on("end_session")
 def end_session():
-    if host_player_id is None or players.get(host_player_id, {}).get("sid") != request.sid:
-        return
-    reset_session()
-
-
-@socketio.on("request_state")
-def request_state():
-    emit_state()
-    emit_players()
+    global players, host_token, host_sid, state
+    if request.sid == host_sid:
+        players.clear()
+        host_token = None
+        host_sid = None
+        state = "waiting"
+        emit_state()
+        emit_players()
 
 
 if __name__ == "__main__":
