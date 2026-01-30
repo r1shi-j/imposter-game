@@ -2,10 +2,10 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Impostor Game</title>
+    <title>Impostor Gamee</title>
 </head>
 <body>
-    <h1>Impostor Game</h1>
+    <h1>Impostor Gamee</h1>
 
     <input id="name" placeholder="Enter your name" />
     <button id="join">Join</button>
@@ -24,11 +24,14 @@
 
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <script>
-    const BACKEND_URL = "https://imposter-backend-ch3h.onrender.com";
-    const playersList = document.getElementById("players");
-    const joinBtn = document.getElementById("join");
+    // const BACKEND_URL = "https://imposter-backend-ch3h.onrender.com";
+    // let socket = io(BACKEND_URL, { transports: ["websocket"] });
 
-    let socket = io(BACKEND_URL, { transports: ["websocket"] });
+    const BACKEND_URL = location.hostname === "localhost" ? "http://localhost:5001": "https://imposter-backend-ch3h.onrender.com";
+    const socket = io(BACKEND_URL);
+
+    const playersList = document.getElementById("players");
+    const joinBtn = document.getElementById("join");    
 
     function hostLogin() {
         socket.emit("host_login", {
