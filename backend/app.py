@@ -111,25 +111,42 @@ def reclaim_host(data):
 @socketio.on("join")
 def join(data):
     if session_state == "waiting":
-        socketio.emit("join_result", {"success": False}, to=request.sid)
+        socketio.emit("join_result", {
+            "success": False,
+            "message": "Waiting for host"
+        }, to=request.sid)
         return
 
+    pid = data.get("playerId")
     name = data.get("name")
-    if not name:
+
+    # Refresh reconnect
+    if pid and pid in players:
+        players[pid]["sid"] = request.sid
+        socketio.emit("join_result", {
+            "success": True,
+            "playerId": pid,
+            "state": session_state
+        }, to=request.sid)
+        emit_players()
         return
 
-    # Reconnect by name
-    for pid, pdata in players.items():
-        if pdata["name"] == name and pdata["sid"] is None:
-            pdata["sid"] = request.sid
-            socketio.emit("join_result", {"success": True, "player_id": pid}, to=request.sid)
-            emit_players()
-            return
+    if not name:
+        socketio.emit("join_result", {
+            "success": False,
+            "message": "Name required"
+        }, to=request.sid)
+        return
 
-    # New player
     pid = str(uuid.uuid4())
     players[pid] = {"sid": request.sid, "name": name}
-    socketio.emit("join_result", {"success": True, "player_id": pid}, to=request.sid)
+
+    socketio.emit("join_result", {
+        "success": True,
+        "playerId": pid,
+        "state": session_state
+    }, to=request.sid)
+
     emit_players()
 
 
@@ -187,6 +204,12 @@ def end_session():
     if host_player_id is None or players.get(host_player_id, {}).get("sid") != request.sid:
         return
     reset_session()
+
+
+@socketio.on("request_state")
+def request_state():
+    emit_state()
+    emit_players()
 
 
 if __name__ == "__main__":

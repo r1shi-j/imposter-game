@@ -18,8 +18,9 @@
 <body>
     <h1>Impostor Game</h1>
     <div id="login">
-        <input id="name" placeholder="Enter your name" autocomplete="off" />
-        <button id="join">Join</button>
+        <h3 id="loginMessage">Waiting for host…</h3>
+        <input id="name" placeholder="Enter your name" autocomplete="off" style="display:none" />
+        <button id="join" style="display:none">Join</button>
     </div>
 
     <div id="lobby">
@@ -88,6 +89,13 @@
             gameDiv.style.display = state === "game" ? "block" : "none";
         }
 
+        function setJoinEnabled(enabled) {
+            document.getElementById("loginMessage").textContent =
+                enabled ? "Enter your name to join" : "Waiting for host…";
+            nameInput.style.display = enabled ? "inline-block" : "none";
+            joinBtn.style.display = enabled ? "inline-block" : "none";
+        }
+
         function renderPlayers(players, container) {
             container.innerHTML = "";
             players.forEach(p => {
@@ -111,6 +119,7 @@
         }
 
         joinBtn.onclick = () => {
+            if (currentState !== "login" || nameInput.style.display === "none") return;
             const name = nameInput.value.trim();
             if (!name) return;
             joinBtn.disabled = true;
@@ -179,11 +188,12 @@
                 localStorage.setItem("isHost", "true");
                 startBtn.style.display = "inline-block";
                 alert("Logged in as host");
-
+                loginHostDiv.style.display = "block";
                 if (data.player_id) {
                     playerId = data.player_id;
                     localStorage.setItem("playerId", playerId);
                 }
+                socket.emit("request_state");
             } else {
                 alert("Wrong password or host already exists");
             }
@@ -194,28 +204,26 @@
 
             if (state === "waiting") {
                 setState("login");
-                loginHostDiv.style.display = isHost ? "none" : "block";
+                setJoinEnabled(false);
+                loginHostDiv.style.display = "block";
             }
 
             if (state === "lobby") {
-                setState("lobby");
+                setState("login");
+                setJoinEnabled(true);
                 loginHostDiv.style.display = isHost ? "block" : "none";
             }
 
             if (state === "game") {
                 setState("game");
                 loginHostDiv.style.display = "none";
-                if (isHost) {
-                    startBtn.style.display = "none";
-                }
+                if (isHost) startBtn.style.display = "none";
             }
         });
 
-        // On page load, if playerId exists, try to rejoin automatically
+        setState("login");
         if (playerId) {
-            joinGame(null);
-        } else {
-            setState("login");
+            socket.emit("join", { playerId });
         }
     </script>
 </body>
