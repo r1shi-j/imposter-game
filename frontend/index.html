@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <title>Impostor Game</title>
     <style>
-        #lobby, #waiting, #game, #loginHost {
+        #lobby, #waiting, #game { 
             display: none;
         }
         #players li {
@@ -17,7 +17,6 @@
 </head>
 <body>
     <h1>Impostor Game</h1>
-
     <div id="login">
         <input id="name" placeholder="Enter your name" autocomplete="off" />
         <button id="join">Join</button>
@@ -88,7 +87,7 @@
             container.innerHTML = "";
             players.forEach(p => {
                 const li = document.createElement("li");
-                li.textContent = p.name + (p.id === playerId ? " (You)" : "");
+                li.textContent = p.name + (p.player_id === playerId ? " (You)" : "");
                 container.appendChild(li);
             });
         }
@@ -174,6 +173,25 @@
         socket.on("disconnect", () => {
             // On disconnect, reset UI to login and clear playerId
             leaveGame();
+        });
+
+        socket.on("state_update", data => {
+            const state = data.state;
+
+            if (state === "waiting") {
+                setState("login");
+                loginHostDiv.style.display = isHost ? "none" : "block";
+            }
+
+            if (state === "lobby") {
+                setState("lobby");
+                loginHostDiv.style.display = isHost ? "block" : "none";
+            }
+
+            if (state === "game") {
+                setState("game");
+                loginHostDiv.style.display = "none";
+            }
         });
 
         // On page load, if playerId exists, try to rejoin automatically
