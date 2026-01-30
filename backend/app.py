@@ -17,8 +17,7 @@ HOST_PASSWORD = "RJANS"
 
 # ---- Global state ----
 players = {}  # player_id -> { "sid": str | None, "name": str }
-host_sid = None
-host_player_id = None
+host_player_id = None   # persistent host identity
 session_state = "waiting"  # waiting | lobby | game
 
 
@@ -43,9 +42,8 @@ def emit_players():
 
 
 def reset_session():
-    global players, host_sid, host_player_id, session_state
+    global players, host_player_id, session_state
     players.clear()
-    host_sid = None
     host_player_id = None
     session_state = "waiting"
     emit_state()
@@ -61,25 +59,19 @@ def handle_connect():
 
 @socketio.on("disconnect")
 def handle_disconnect():
-    global host_sid
-
     for pid, pdata in players.items():
         if pdata["sid"] == request.sid:
             pdata["sid"] = None
             print(f"{pdata['name']} disconnected")
             break
-
-    if request.sid == host_sid:
-        host_sid = None
-
     emit_players()
 
 
 @socketio.on("host_login")
 def host_login(data):
-    global host_sid, host_player_id, session_state
+    global host_player_id, session_state
 
-    if host_sid is not None:
+    if host_player_id is not None:
         socketio.emit("host_login_result", {"success": False}, to=request.sid)
         return
 
@@ -87,7 +79,6 @@ def host_login(data):
         socketio.emit("host_login_result", {"success": False}, to=request.sid)
         return
 
-    host_sid = request.sid
     host_player_id = str(uuid.uuid4())
     players[host_player_id] = {
         "sid": request.sid,
@@ -104,6 +95,17 @@ def host_login(data):
 
     emit_state()
     emit_players()
+
+
+@socketio.on("reclaim_host")
+def reclaim_host(data):
+    global host_player_id
+
+    pid = data.get("playerId")
+    if pid and pid == host_player_id and pid in players:
+        players[pid]["sid"] = request.sid
+        socketio.emit("host_login_result", {"success": True}, to=request.sid)
+        emit_players()
 
 
 @socketio.on("join")
@@ -141,7 +143,7 @@ def leave(data):
 
 @socketio.on("kick")
 def kick(data):
-    if request.sid != host_sid:
+    if host_player_id is None or players.get(host_player_id, {}).get("sid") != request.sid:
         return
 
     pid = data.get("player_id")
@@ -155,7 +157,7 @@ def kick(data):
 def start_game():
     global session_state
 
-    if request.sid != host_sid:
+    if host_player_id is None or players.get(host_player_id, {}).get("sid") != request.sid:
         return
 
     if session_state != "lobby":
@@ -182,7 +184,7 @@ def start_game():
 
 @socketio.on("end_session")
 def end_session():
-    if request.sid != host_sid:
+    if host_player_id is None or players.get(host_player_id, {}).get("sid") != request.sid:
         return
     reset_session()
 

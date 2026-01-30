@@ -37,7 +37,7 @@
     <div id="game">
         <h3>Game Started</h3>
         <p id="roleDisplay"></p>
-        <button id="endGame">Leave Game</button>
+        <button id="endGame">End Session</button>
     </div>
 
     <div id="loginHost" style="position:fixed;top:10px;right:10px">
@@ -74,6 +74,11 @@
         let playerId = localStorage.getItem("playerId") || null;
         let currentState = "login"; // login, lobby, waiting, game
         let isHost = false;
+        isHost = localStorage.getItem("isHost") === "true";
+
+        if (isHost && playerId) {
+            socket.emit("reclaim_host", { playerId });
+        }
 
         function setState(state) {
             currentState = state;
@@ -114,7 +119,15 @@
 
         leaveLobbyBtn.onclick = leaveGame;
         leaveWaitingBtn.onclick = leaveGame;
-        endGameBtn.onclick = leaveGame;
+        endGameBtn.onclick = () => {
+            if (isHost) {
+                socket.emit("end_session");
+                localStorage.clear();
+                location.reload();
+            } else {
+                leaveGame();
+            }
+        };
 
         hostLoginBtn.onclick = () => {
             socket.emit("host_login", { password: hostPassInput.value });
@@ -163,16 +176,17 @@
         socket.on("host_login_result", data => {
             if (data.success) {
                 isHost = true;
+                localStorage.setItem("isHost", "true");
                 startBtn.style.display = "inline-block";
                 alert("Logged in as host");
-            } else {
-                alert("Wrong password");
-            }
-        });
 
-        socket.on("disconnect", () => {
-            // On disconnect, reset UI to login and clear playerId
-            leaveGame();
+                if (data.player_id) {
+                    playerId = data.player_id;
+                    localStorage.setItem("playerId", playerId);
+                }
+            } else {
+                alert("Wrong password or host already exists");
+            }
         });
 
         socket.on("state_update", data => {
@@ -191,6 +205,9 @@
             if (state === "game") {
                 setState("game");
                 loginHostDiv.style.display = "none";
+                if (isHost) {
+                    startBtn.style.display = "none";
+                }
             }
         });
 
