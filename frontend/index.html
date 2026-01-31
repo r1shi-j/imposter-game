@@ -9,9 +9,10 @@
 </head>
 <body>
 
-<h2 id="title">Waiting for host…</h2>
-
 <div id="topRight"></div>
+<div id="timer" style="text-align:center;font-size:24px;display:none"></div>
+
+<h2 id="title">Waiting for host...</h2>
 
 <div id="hostLogin">
     <input id="hostPass" type="password" placeholder="Host password">
@@ -25,151 +26,347 @@
 
 <ul id="players"></ul>
 
+<div id="votingArea" style="display:none">
+    <h3>Vote for the impostor</h3>
+    <div id="voteList"></div>
+    <p id="remainingVotes"></p>
+</div>
+
+<button id="revealBtn" style="display:none" onclick="revealResults()">
+    Reveal Results
+</button>
+
+<div id="roundSettings" style="display:none">
+    <label>
+        Round length (minutes):
+        <input type="number" id="roundMinutes" min="1" max="5" value="3"
+               onchange="updateMinutes()">
+    </label>
+</div>
+
 <button id="startGame" style="display:none" onclick="startGame()">Start Game</button>
 
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <script>
-const BACKEND_URL = location.hostname === "localhost"
-    ? "http://localhost:5001"
-    : "https://imposter-backend-ch3h.onrender.com";
+    let lastPlayers = [];
+    let myVote = null;
+    let lastState = null;
+    let currentState = null;
 
-let hostToken = localStorage.getItem("hostToken");
-let playerId = localStorage.getItem("playerId");
+    const BACKEND_URL = location.hostname === "localhost"
+        ? "http://localhost:5001"
+        : "https://imposter-backend-ch3h.onrender.com";
 
-const socket = io(BACKEND_URL, {
-    query: {
-        token: hostToken,
-        playerId: playerId
-    }
-});
+    let hostToken = localStorage.getItem("hostToken");
+    let playerId = localStorage.getItem("playerId");
 
-let isHost = false;
-let hasJoined = false;
-
-socket.on("identity_update", data => {
-    isHost = data.isHost;
-    hasJoined = data.hasJoined;
-
-    if (hasJoined) {
-        document.getElementById("joinArea").style.display = "none";
-    }
-});
-
-function renderPlayers(players) {
-    const ul = document.getElementById("players");
-    ul.innerHTML = "";
-    players.forEach(p => {
-        const li = document.createElement("li");
-        li.textContent = p.name;
-        ul.appendChild(li);
+    const socket = io(BACKEND_URL, {
+        query: {
+            token: hostToken,
+            playerId: playerId
+        }
     });
-}
 
-function hostLogin() {
-    socket.emit("host_login", { password: document.getElementById("hostPass").value });
-}
+    let isHost = false;
+    let hasJoined = false;
 
-function join() {
-    if (hasJoined) return;
+    socket.on("identity_update", data => {
+        if (data.playerId) {
+            playerId = data.playerId;
+            localStorage.setItem("playerId", data.playerId);
+        }
 
-    const name = document.getElementById("name").value.trim();
-    if (!name) return;
+        isHost = data.isHost;
+        hasJoined = data.hasJoined;
 
-    socket.emit("join", { name, playerId });
-}
+        if (hasJoined) {
+            document.getElementById("joinArea").style.display = "none";
+        }
+        socket.emit("request_state_sync");
+    });
 
-function leave() {
-    localStorage.removeItem("playerId");
-    hasJoined = false;
-    socket.emit("leave");
-    location.reload();
-}
-
-function startGame() {
-    socket.emit("start_game");
-}
-
-socket.on("host_login_result", data => {
-    if (!data.success) return alert("Host login failed");
-
-    localStorage.setItem("hostToken", data.token);
-    location.reload();
-});
-
-socket.on("join_result", data => {
-    if (!data.success) return;
-
-    hasJoined = true;
-    localStorage.setItem("playerId", data.playerId);
-
-    document.getElementById("name").value = "";
-    document.getElementById("joinArea").style.display = "none";
-    // Only update topRight to show Leave button if NOT host
-    if (!isHost) {
-        const top = document.getElementById("topRight");
-        top.innerHTML = "<button onclick='leave()'>Leave</button>";
+    function renderPlayers(players) {
+        const ul = document.getElementById("players");
+        ul.innerHTML = "";
+        players.forEach(p => {
+            const li = document.createElement("li");
+            li.textContent = p.name;
+            ul.appendChild(li);
+        });
     }
 
-    // Host re-joining after reset must re-show Start Game
-    if (isHost) {
-        document.getElementById("startGame").style.display = "block";
-    }
-});
+    function renderVoting(players) {
+        const list = document.getElementById("voteList");
+        list.innerHTML = "";
 
-socket.on("state_update", data => {
-    if (!data.hostExists) {
+        players.forEach(p => {
+            if (p.player_id === playerId) return;
+
+            const label = document.createElement("label");
+            const radio = document.createElement("input");
+            radio.type = "radio";
+            radio.name = "vote";
+            radio.value = p.player_id;
+
+            if (myVote === p.player_id) {
+                radio.checked = true;
+            }
+
+            radio.onchange = () => {
+                myVote = p.player_id;
+                socket.emit("cast_vote", { voted: p.player_id });
+            };
+
+            label.appendChild(radio);
+            label.appendChild(document.createTextNode(" " + p.name));
+            list.appendChild(label);
+            list.appendChild(document.createElement("br"));
+        });
+    }
+
+
+    function hostLogin() {
+        socket.emit("host_login", { password: document.getElementById("hostPass").value });
+    }
+
+    function join() {
+        if (hasJoined) return;
+
+        const name = document.getElementById("name").value.trim();
+        if (!name) return;
+
+        // Check if name already exists
+        if (lastPlayers.some(p => p.name.toLowerCase() === name.toLowerCase())) {
+            alert("This name is already taken!");
+            return;
+        }
+
+        socket.emit("join", { name, playerId });
+    }
+
+    function leave() {
         localStorage.removeItem("playerId");
-        localStorage.removeItem("hostToken");
         hasJoined = false;
-        // Clear players list
-        document.getElementById("players").innerHTML = "";
-        // Hide start game button
-        document.getElementById("startGame").style.display = "none";
-        // Clear topRight explicitly when no host exists
-        document.getElementById("topRight").innerHTML = "";
+        socket.emit("leave");
+        location.reload();
     }
 
-    const hostLogin = document.getElementById("hostLogin");
-    const joinArea = document.getElementById("joinArea");
-    const startBtn = document.getElementById("startGame");
-    const title = document.getElementById("title");
-    const top = document.getElementById("topRight");
-
-    title.textContent =
-        data.state === "waiting" ? "Waiting for host…" :
-        data.state === "lobby" ? "Lobby" : "Game Started";
-
-    // Host login
-    hostLogin.style.display =
-        data.hostExists ? "none" : "block";
-
-    // Name entry:
-    // - visible for ALL clients once host exists
-    // - hidden after that client has joined
-    if (data.hostExists && !hasJoined) {
-        joinArea.style.display = "block";
-    } else {
-        joinArea.style.display = "none";
+    function startGame() {
+        if (!hasJoined) {
+            alert("Host must join the game first");
+            return;
+        }
+        console.log("Start Game button clicked");
+        socket.emit("start_game");
     }
 
-    // Start game
-    startBtn.style.display =
-        (isHost && hasJoined && data.state === "lobby") ? "block" : "none";
+    function updateMinutes() {
+        const mins = parseInt(document.getElementById("roundMinutes").value);
+        socket.emit("set_round_minutes", { minutes: mins });
+    }
 
-    // Top-right controls
-    if (data.hostExists) {
-        top.innerHTML = "";
-        if (isHost) {
-            top.innerHTML = "<b>Host</b> <button onclick='socket.emit(\"end_session\")'>End Session</button>";
-        } else if (hasJoined) {
+    function revealResults() {
+        console.log("Reveal Results clicked");
+        socket.emit("reveal_results");
+    }
+
+    socket.on("host_login_result", data => {
+        if (!data.success) return alert("Host login failed");
+
+        localStorage.setItem("hostToken", data.token);
+        location.reload();
+    });
+
+    socket.on("join_result", data => {
+        if (!data.success) return;
+
+        hasJoined = true;
+        localStorage.setItem("playerId", data.playerId);
+
+        document.getElementById("name").value = "";
+        document.getElementById("joinArea").style.display = "none";
+        // Only update topRight to show Leave button if NOT host
+        if (!isHost) {
+            const top = document.getElementById("topRight");
             top.innerHTML = "<button onclick='leave()'>Leave</button>";
         }
-    }
-});
 
-socket.on("players_update", data => {
-    renderPlayers(data.players);
-});
+        // Host re-joining after reset must re-show Start Game
+        if (isHost) {
+            document.getElementById("startGame").style.display = "block";
+        }
+
+        socket.emit("request_state_sync");
+    });
+
+    socket.on("state_update", data => {
+        currentState = data.state;
+
+        if (!data.hostExists) {
+            localStorage.removeItem("playerId");
+            localStorage.removeItem("hostToken");
+            hasJoined = false;
+            // Clear players list
+            document.getElementById("players").innerHTML = "";
+            // Hide start game button
+            document.getElementById("startGame").style.display = "none";
+            // Clear topRight explicitly when no host exists
+            document.getElementById("topRight").innerHTML = "";
+        }
+
+        const hostLogin = document.getElementById("hostLogin");
+        const joinArea = document.getElementById("joinArea");
+        const startBtn = document.getElementById("startGame");
+        const title = document.getElementById("title");
+        const top = document.getElementById("topRight");
+        const timer = document.getElementById("timer");
+        const roundBox = document.getElementById("roundSettings");
+
+        title.textContent =
+            data.state === "waiting" ? "Waiting for host..." :
+            data.state === "lobby" ? "Lobby" :
+            data.state === "game" ? "Game Started" :
+            "Vote";
+
+        // Host login
+        hostLogin.style.display =
+            data.hostExists ? "none" : "block";
+
+        // Name entry:
+        // - visible for ALL clients once host exists
+        // - hidden after that client has joined
+        if (data.hostExists && !hasJoined) {
+            joinArea.style.display = "block";
+        } else {
+            joinArea.style.display = "none";
+        }
+
+        if (data.roundMinutes) {
+            document.getElementById("roundMinutes").value = data.roundMinutes;
+        }
+
+        roundBox.style.display =
+            (isHost && hasJoined && data.state === "lobby") ? "block" : "none";
+
+        startBtn.style.display =
+            (isHost && hasJoined && data.state === "lobby") ? "block" : "none";
+
+        // Top-right controls
+        if (data.hostExists) {
+            top.innerHTML = "";
+            if (isHost) {
+                top.innerHTML = "<b>Host</b> <button onclick='socket.emit(\"end_session\")'>End Session</button>";
+            } else if (hasJoined) {
+                top.innerHTML = "<button onclick='leave()'>Leave</button>";
+            }
+        }
+
+        if (data.state === "game") {
+            timer.style.display = "block";
+            if (data.timeRemaining !== null && data.timeRemaining !== undefined) {
+                const mins = Math.floor(data.timeRemaining / 60);
+                const secs = String(data.timeRemaining % 60).padStart(2, "0");
+                timer.textContent = `${mins}:${secs}`;
+            }
+        } else {
+            timer.style.display = "none";
+        }
+
+        const votingArea = document.getElementById("votingArea");
+        const remaining = document.getElementById("remainingVotes");
+        const playersList = document.getElementById("players");
+
+        if (data.state === "voting") {
+            if (currentState !== "voting") {
+                myVote = null;
+            }
+
+            votingArea.style.display = "block";
+            playersList.style.display = "none";
+
+            remaining.textContent =
+                data.remainingVotes > 0
+                ? `Waiting for ${data.remainingVotes} players to vote...`
+                : "All votes are in. Waiting for host.";
+
+            // Render voting list - ensure it renders when state transitions to voting
+            if (lastPlayers.length > 0 && playerId) {
+                renderVoting(lastPlayers);
+            } else if (!playerId) {
+                // If playerId not yet set, request state sync to get it
+                socket.emit("request_state_sync");
+            }
+        } else {
+            // Don't clear myVote here - keep it until round_result is processed
+            votingArea.style.display = "none";
+            playersList.style.display = "block";
+        }
+
+        const revealBtn = document.getElementById("revealBtn");
+
+        if (data.state === "voting" && isHost && data.remainingVotes === 0) {
+            revealBtn.style.display = "block";
+        } else {
+            revealBtn.style.display = "none";
+        }
+
+        // lastState = data.state;  <-- removed as per instructions
+    });
+
+    socket.on("players_update", data => {
+        lastPlayers = data.players;
+        renderPlayers(data.players);
+
+        // Always re-render voting list when players update during voting
+        if (currentState === "voting" && playerId) {
+            renderVoting(lastPlayers);
+        }
+    });
+
+    socket.on("role", data => {
+        if (data.role === "impostor") {
+            alert("You are the IMPOSTOR");
+        } else {
+            alert(`The word is: ${data.word}`);
+        }
+    });
+
+    socket.on("round_result", data => {
+        const impostorName = data.impostor;
+        const votedOutName = data.votedOut;
+        const myVoted = myVote;
+        
+        // Find the IDs by looking up names in lastPlayers
+        const impostorPlayer = lastPlayers.find(p => p.name === impostorName);
+        const impostorId = impostorPlayer ? impostorPlayer.player_id : null;
+        
+        const votedOutPlayer = lastPlayers.find(p => p.name === votedOutName);
+        const votedOutId = votedOutPlayer ? votedOutPlayer.player_id : null;
+        
+        // Find the name of who I voted for
+        const myVotedPlayer = lastPlayers.find(p => p.player_id === myVoted);
+        const myVotedName = myVotedPlayer ? myVotedPlayer.name : "Unknown";
+
+        console.log("Round result debug:", {
+            myVoted,
+            myVotedName,
+            impostorId,
+            impostorName,
+            votedOutId,
+            votedOutName,
+            match: myVoted === impostorId
+        });
+
+        if (!myVoted) {
+            alert(`You didn't vote.\nImpostor was ${impostorName}.`);
+        } else if (myVoted === impostorId) {
+            alert(`Correct! You voted for ${myVotedName}, who was the impostor.`);
+        } else {
+            alert(`Wrong! You voted for ${myVotedName}.\nThe impostor was ${impostorName}.`);
+        }
+
+        myVote = null;
+    });
 </script>
 </body>
 </html>
