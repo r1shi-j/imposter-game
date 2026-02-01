@@ -36,6 +36,21 @@
     Reveal Results
 </button>
 
+<div id="leaderboardArea" style="display:none">
+    <!-- <h3>Leaderboard</h3> -->
+    <table id="leaderboardTable" style="border-collapse:collapse;width:100%">
+        <tr style="border-bottom:1px solid #ccc">
+            <th style="padding:10px;text-align:left">Rank</th>
+            <th style="padding:10px;text-align:left">Player</th>
+            <th style="padding:10px;text-align:right">Score</th>
+        </tr>
+    </table>
+</div>
+
+<button id="nextRoundBtn" style="display:none" onclick="nextRound()">
+    Next Round
+</button>
+
 <div id="roundSettings" style="display:none">
     <label>
         Round length (minutes):
@@ -52,6 +67,7 @@
     let myVote = null;
     let lastState = null;
     let currentState = null;
+    let showingResults = false;  // Track if results are being displayed
 
     const BACKEND_URL = location.hostname === "localhost"
         ? "http://localhost:5001"
@@ -99,8 +115,22 @@
         const list = document.getElementById("voteList");
         list.innerHTML = "";
 
+        // Always get playerId from localStorage (most reliable source)
+        playerId = localStorage.getItem("playerId") || playerId;
+        
+        if (!playerId) {
+            console.warn("renderVoting: No playerId available!");
+            return;
+        }
+
+        console.log("renderVoting: filtering out playerId=", playerId);
+
         players.forEach(p => {
-            if (p.player_id === playerId) return;
+            // Strict string comparison to filter out current player
+            if (String(p.player_id) === String(playerId)) {
+                console.log("Filtering out player:", p.name, p.player_id);
+                return;
+            }
 
             const label = document.createElement("label");
             const radio = document.createElement("input");
@@ -170,6 +200,11 @@
         socket.emit("reveal_results");
     }
 
+    function nextRound() {
+        console.log("Next Round clicked");
+        socket.emit("next_round");
+    }
+
     socket.on("host_login_result", data => {
         if (!data.success) return alert("Host login failed");
 
@@ -206,12 +241,18 @@
             localStorage.removeItem("playerId");
             localStorage.removeItem("hostToken");
             hasJoined = false;
+            showingResults = false;
             // Clear players list
             document.getElementById("players").innerHTML = "";
             // Hide start game button
             document.getElementById("startGame").style.display = "none";
             // Clear topRight explicitly when no host exists
             document.getElementById("topRight").innerHTML = "";
+        }
+
+        // Don't override display if showing results
+        if (showingResults) {
+            return;
         }
 
         const hostLogin = document.getElementById("hostLogin");
@@ -226,6 +267,8 @@
             data.state === "waiting" ? "Waiting for host..." :
             data.state === "lobby" ? "Lobby" :
             data.state === "game" ? "Game Started" :
+            data.state === "voting" ? "Vote" :
+            data.state === "leaderboard" ? "Leaderboard" :
             "Vote";
 
         // Host login
@@ -246,7 +289,7 @@
         }
 
         roundBox.style.display =
-            (isHost && hasJoined && data.state === "lobby") ? "block" : "none";
+            (isHost && hasJoined && (data.state === "lobby" || data.state === "leaderboard")) ? "block" : "none";
 
         startBtn.style.display =
             (isHost && hasJoined && data.state === "lobby") ? "block" : "none";
@@ -275,14 +318,61 @@
         const votingArea = document.getElementById("votingArea");
         const remaining = document.getElementById("remainingVotes");
         const playersList = document.getElementById("players");
+        const leaderboardArea = document.getElementById("leaderboardArea");
+        const nextRoundBtn = document.getElementById("nextRoundBtn");
+        const revealBtn = document.getElementById("revealBtn");
 
-        if (data.state === "voting") {
+        if (data.state === "leaderboard") {
+            leaderboardArea.style.display = "block";
+            votingArea.style.display = "none";
+            playersList.style.display = "none";
+            revealBtn.style.display = "none";
+            document.getElementById("startGame").style.display = "none";
+            
+            // Populate leaderboard table if data provided
+            if (data.leaderboard && data.leaderboard.length > 0) {
+                const leaderboardTable = document.getElementById("leaderboardTable");
+                const rows = leaderboardTable.querySelectorAll("tr");
+                rows.forEach((row, idx) => {
+                    if (idx > 0) row.remove();
+                });
+                
+                data.leaderboard.forEach((player, idx) => {
+                    const tr = document.createElement("tr");
+                    tr.style.borderBottom = "1px solid #ccc";
+                    
+                    const rankTd = document.createElement("td");
+                    rankTd.textContent = idx + 1;
+                    rankTd.style.padding = "10px";
+                    
+                    const nameTd = document.createElement("td");
+                    nameTd.textContent = player.name;
+                    nameTd.style.padding = "10px";
+                    
+                    const scoreTd = document.createElement("td");
+                    scoreTd.textContent = player.score;
+                    scoreTd.style.padding = "10px";
+                    scoreTd.style.textAlign = "right";
+                    
+                    tr.appendChild(rankTd);
+                    tr.appendChild(nameTd);
+                    tr.appendChild(scoreTd);
+                    leaderboardTable.appendChild(tr);
+                });
+            }
+            
+            if (isHost) {
+                nextRoundBtn.style.display = "block";
+            }
+        } else if (data.state === "voting") {
             if (currentState !== "voting") {
                 myVote = null;
             }
 
             votingArea.style.display = "block";
             playersList.style.display = "none";
+            leaderboardArea.style.display = "none";
+            nextRoundBtn.style.display = "none";
 
             remaining.textContent =
                 data.remainingVotes > 0
@@ -290,27 +380,24 @@
                 : "All votes are in. Waiting for host.";
 
             // Render voting list - ensure it renders when state transitions to voting
-            if (lastPlayers.length > 0 && playerId) {
+            if (lastPlayers.length > 0) {
                 renderVoting(lastPlayers);
             } else if (!playerId) {
                 // If playerId not yet set, request state sync to get it
                 socket.emit("request_state_sync");
             }
         } else {
-            // Don't clear myVote here - keep it until round_result is processed
             votingArea.style.display = "none";
             playersList.style.display = "block";
+            leaderboardArea.style.display = "none";
+            nextRoundBtn.style.display = "none";
         }
-
-        const revealBtn = document.getElementById("revealBtn");
 
         if (data.state === "voting" && isHost && data.remainingVotes === 0) {
             revealBtn.style.display = "block";
         } else {
             revealBtn.style.display = "none";
         }
-
-        // lastState = data.state;  <-- removed as per instructions
     });
 
     socket.on("players_update", data => {
@@ -335,6 +422,7 @@
         const impostorName = data.impostor;
         const votedOutName = data.votedOut;
         const myVoted = myVote;
+        const leaderboard = data.leaderboard || [];
         
         // Find the IDs by looking up names in lastPlayers
         const impostorPlayer = lastPlayers.find(p => p.name === impostorName);
@@ -357,15 +445,58 @@
             match: myVoted === impostorId
         });
 
-        if (!myVoted) {
+        // Use backend-provided counts for impostor messaging
+        const numCorrect = data.numCorrect !== undefined ? data.numCorrect : 0;
+        const numPossible = data.numPossible !== undefined ? data.numPossible : Math.max(0, lastPlayers.length - 1);
+        const isImpostor = String(playerId) === String(impostorId);
+        const didVoteCorrect = String(myVoted) === String(impostorId);
+
+        if (isImpostor) {
+            alert(`${numCorrect}/${numPossible} players correctly guessed you.`);
+        } else if (!myVoted) {
             alert(`You didn't vote.\nImpostor was ${impostorName}.`);
-        } else if (myVoted === impostorId) {
+        } else if (didVoteCorrect) {
             alert(`Correct! You voted for ${myVotedName}, who was the impostor.`);
         } else {
             alert(`Wrong! You voted for ${myVotedName}.\nThe impostor was ${impostorName}.`);
         }
 
+        // Display leaderboard
+        const leaderboardTable = document.getElementById("leaderboardTable");
+        const rows = leaderboardTable.querySelectorAll("tr");
+        rows.forEach((row, idx) => {
+            if (idx > 0) row.remove(); // Remove old rows
+        });
+
+        leaderboard.forEach((player, idx) => {
+            const tr = document.createElement("tr");
+            tr.style.borderBottom = "1px solid #ccc";
+            
+            const rankTd = document.createElement("td");
+            rankTd.textContent = idx + 1;
+            rankTd.style.padding = "10px";
+            
+            const nameTd = document.createElement("td");
+            nameTd.textContent = player.name;
+            nameTd.style.padding = "10px";
+            
+            const scoreTd = document.createElement("td");
+            scoreTd.textContent = player.score;
+            scoreTd.style.padding = "10px";
+            scoreTd.style.textAlign = "right";
+            
+            tr.appendChild(rankTd);
+            tr.appendChild(nameTd);
+            tr.appendChild(scoreTd);
+            leaderboardTable.appendChild(tr);
+        });
+
         myVote = null;
+    });
+
+    socket.on("next_round_started", data => {
+        // Reset the results flag when new round starts
+        showingResults = false;
     });
 </script>
 </body>

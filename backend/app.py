@@ -18,11 +18,12 @@ WORDS = ["suntanning", "airport", "classroom"]
 players = {}   # player_id -> {sid, name}
 host_token = None
 host_sid = None
-state = "waiting"  # waiting | lobby | game | voting
+state = "waiting"  # waiting | lobby | game | voting | leaderboard
 round_minutes = DEFAULT_DURATION
 roles = {}  # player_id -> "impostor" | "crew"
 votes = {}        # voter_pid -> voted_pid
 scores = {}       # player_id -> points
+leaderboard = []  # list of {name, score} for display
 current_word = None
 round_end_time = None
 timer_thread = None
@@ -45,13 +46,19 @@ def emit_state():
     if state == "game" and round_end_time:
         time_remaining = max(0, int(round_end_time - time.time()))
 
-    socketio.emit("state_update", {
+    emit_data = {
         "state": state,
         "hostExists": host_token is not None,
         "roundMinutes": round_minutes,
         "remainingVotes": remaining,
         "timeRemaining": time_remaining
-    })
+    }
+
+    # Include leaderboard data when in leaderboard state
+    if state == "leaderboard":
+        emit_data["leaderboard"] = leaderboard
+
+    socketio.emit("state_update", emit_data)
 
 
 def emit_players():
@@ -327,9 +334,7 @@ def compute_results():
 
 @socketio.on("reveal_results")
 def reveal_results():
-    global state
-
-    print("Reveal results clicked")
+    global state, scores
 
     if request.sid != host_sid:
         return
@@ -344,15 +349,67 @@ def reveal_results():
     if not result:
         return
 
+    impostor_pid = result["impostor"]
+    voted_out_pid = result["votedOut"]
+
+    # Initialize scores if needed
+    for pid in players:
+        if pid not in scores:
+            scores[pid] = 0
+
+    # Score the impostor: +1 for each incorrect vote FROM NON-IMPOSTORS
+    incorrect_votes = 0
+    for voter_pid, voted_pid in votes.items():
+        if str(voter_pid) != str(impostor_pid) and str(voted_pid) != str(impostor_pid):
+            incorrect_votes += 1
+    scores[impostor_pid] += incorrect_votes
+
+    # Score the crew: +1 if they voted correctly (and they're not the impostor)
+    # Count correct votes from non-impostor players and award them
+    num_correct = 0
+    for voter_pid, voted_pid in votes.items():
+        try:
+            if str(voter_pid) == str(impostor_pid):
+                # ignore impostor's own vote for scoring
+                continue
+            if str(voted_pid) == str(impostor_pid):
+                # only count if voter is a known player
+                if voter_pid in players:
+                    scores[voter_pid] += 1
+                    num_correct += 1
+        except Exception:
+            continue
+
+    # Build leaderboard data
+    global leaderboard
+    leaderboard = [
+        {
+            "name": players[pid]["name"],
+            "score": scores[pid]
+        }
+        for pid in players
+        if pid in scores
+    ]
+    leaderboard.sort(key=lambda x: x["score"], reverse=True)
+
+    # Number of non-impostor players (possible voters excluding impostor)
+    num_possible = sum(1 for pid in players if str(pid) != str(impostor_pid))
+
+    # Debug: log votes and counts
+    print(f"reveal_results: votes={votes}, impostor={impostor_pid}, num_correct={num_correct}, num_possible={num_possible}")
+
     socketio.emit("round_result", {
-        "votedOut": players[result["votedOut"]]["name"],
-        "votedOutId": result["votedOut"],
-        "impostor": players[result["impostor"]]["name"],
-        "impostorId": result["impostor"],
-        "correct": result["correct"]
+        "votedOut": players[voted_out_pid]["name"],
+        "votedOutId": voted_out_pid,
+        "impostor": players[impostor_pid]["name"],
+        "impostorId": impostor_pid,
+        "correct": result["correct"],
+        "leaderboard": leaderboard,
+        "numCorrect": num_correct,
+        "numPossible": num_possible
     })
 
-    state = "lobby"
+    state = "leaderboard"
     emit_state()
 
 
@@ -368,7 +425,7 @@ def set_round_minutes(data):
 
 @socketio.on("end_session")
 def end_session():
-    global players, host_token, host_sid, state, roles, round_minutes, current_word
+    global players, host_token, host_sid, state, roles, round_minutes, current_word, scores, leaderboard
     if request.sid == host_sid:
         players.clear()
         votes.clear()
@@ -379,8 +436,51 @@ def end_session():
         round_minutes = DEFAULT_DURATION
         current_word = None
         scores.clear()
+        leaderboard = []
         emit_state()
         emit_players()
+
+
+@socketio.on("next_round")
+def next_round():
+    global state, roles, current_word
+
+    if request.sid != host_sid:
+        return
+
+    if state not in ("lobby", "leaderboard"):
+        return
+
+    votes.clear()
+    state = "game"
+    emit_state()
+
+    global timer_thread
+    timer_thread = threading.Thread(target=start_round_timer, daemon=True)
+    timer_thread.start()
+
+    roles = {}
+    current_word = random.choice(WORDS)
+
+    impostor_pid = random.choice(list(players.keys()))
+
+    for pid in players:
+        roles[pid] = "impostor" if pid == impostor_pid else "crew"
+
+    # Emit signal that next round has started
+    socketio.emit("next_round_started", {})
+
+    for pid, role in roles.items():
+        sid = players[pid]["sid"]
+        if sid:
+            if role == "impostor":
+                socketio.emit("role", {"role": "impostor"}, to=sid)
+            else:
+                socketio.emit(
+                    "role",
+                    {"role": "crew", "word": current_word},
+                    to=sid
+                )
 
 
 @socketio.on("request_state_sync")
