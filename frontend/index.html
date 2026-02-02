@@ -37,7 +37,6 @@
 </button>
 
 <div id="leaderboardArea" style="display:none">
-    <!-- <h3>Leaderboard</h3> -->
     <table id="leaderboardTable" style="border-collapse:collapse;width:100%">
         <tr style="border-bottom:1px solid #ccc">
             <th style="padding:10px;text-align:left">Rank</th>
@@ -53,13 +52,22 @@
 
 <div id="roundSettings" style="display:none">
     <label>
-        Round length (minutes):
-        <input type="number" id="roundMinutes" min="1" max="5" value="3"
-               onchange="updateMinutes()">
+        Round length:
+        <span id="roundLengthDisplay">3:00</span>
     </label>
+    <div style="display:inline-block;margin-left:10px">
+        <button id="decreaseDefault30">-30s</button>
+        <button id="increaseDefault30">+30s</button>
+    </div>
 </div>
 
 <button id="startGame" style="display:none" onclick="startGame()">Start Game</button>
+
+<div id="playerManagement" style="display:none">
+    <ul id="playerManagementList">
+        <li>Manage me b</li>
+    </ul>
+</div>
 
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <script>
@@ -74,13 +82,23 @@
         : "https://imposter-backend-ch3h.onrender.com";
 
     let hostToken = localStorage.getItem("hostToken");
-    let playerId = localStorage.getItem("playerId");
+    // Respect a suppress flag so "Leave" can prevent immediate auto-rejoin on reload
+    let suppressAutoJoin = localStorage.getItem("suppressAutoJoin");
+    let storedPlayerId = localStorage.getItem("playerId");
+    let playerId = storedPlayerId;
+    
+    // Build query params conditionally
+    let query = { token: hostToken };
+    if (!suppressAutoJoin && storedPlayerId) {
+        query.playerId = storedPlayerId;
+    }
+    if (suppressAutoJoin) {
+        // Clear the flag so next full reload will allow auto-join
+        localStorage.removeItem("suppressAutoJoin");
+    }
 
     const socket = io(BACKEND_URL, {
-        query: {
-            token: hostToken,
-            playerId: playerId
-        }
+        query: query
     });
 
     let isHost = false;
@@ -102,12 +120,42 @@
     });
 
     function renderPlayers(players) {
+        // Ensure host's playerId is always available immediately after joining
+        playerId = localStorage.getItem("playerId") || playerId;
         const ul = document.getElementById("players");
         ul.innerHTML = "";
         players.forEach(p => {
             const li = document.createElement("li");
             li.textContent = p.name;
             ul.appendChild(li);
+        });
+
+        // Host-only player management list
+        const manageList = document.getElementById("playerManagementList");
+        manageList.innerHTML = "";
+
+        if (!isHost) return;
+
+        players.forEach(p => {
+            // Host should not be able to remove themselves
+            if (String(p.player_id) === String(playerId)) return;
+
+            const li = document.createElement("li");
+            li.style.marginBottom = "6px";
+
+            const nameSpan = document.createElement("span");
+            nameSpan.textContent = p.name;
+            nameSpan.style.marginRight = "10px";
+
+            const btn = document.createElement("button");
+            btn.textContent = "Remove";
+            btn.onclick = () => {
+                kickPlayer(p.player_id, p.name);
+            };
+
+            li.appendChild(nameSpan);
+            li.appendChild(btn);
+            manageList.appendChild(li);
         });
     }
 
@@ -154,13 +202,15 @@
         });
     }
 
-
     function hostLogin() {
         socket.emit("host_login", { password: document.getElementById("hostPass").value });
     }
 
     function join() {
-        if (hasJoined) return;
+        if (hasJoined) {
+            // is this called if they have joined before, and we are merging the data
+            return;
+        }
 
         const name = document.getElementById("name").value.trim();
         if (!name) return;
@@ -171,38 +221,85 @@
             return;
         }
 
-        socket.emit("join", { name, playerId });
+        // Send the stored playerId (if any) so rejoining merges with previous data
+        const pidToSend = localStorage.getItem("playerId");
+        socket.emit("join", { name, playerId: pidToSend });
     }
 
     function leave() {
-        localStorage.removeItem("playerId");
+        if (currentState === "voting") {
+            alert("Cannot leave during voting. Wait for results.");
+            return;
+        }
+        
+        if (!confirm("Are you sure you want to leave?")) {
+            return;
+        }
+    
+        // Keep playerId in localStorage so they can rejoin and merge scores
+        // Only remove hostToken and set a flag to suppress auto-rejoin on reload
+        localStorage.removeItem("hostToken");
+        localStorage.setItem("suppressAutoJoin", "1");
         hasJoined = false;
         socket.emit("leave");
-        location.reload();
     }
 
+    function kickPlayer(playerId, playerName) {
+        if (currentState === "voting") {
+            alert("Cannot remove players during voting.");
+            return;
+        }
+
+        if (!confirm(`Remove ${playerName} from the game?`)) {
+            return;
+        }
+
+        socket.emit("leave", { playerId });
+    }
+
+    const MIN_PLAYERS = 3;
     function startGame() {
         if (!hasJoined) {
             alert("Host must join the game first");
             return;
         }
-        console.log("Start Game button clicked");
+        // lastPlayers contains only active players
+        if (lastPlayers.length < MIN_PLAYERS) {
+            alert(`Need at least ${MIN_PLAYERS} players to start the game.`);
+            return;
+        }
         socket.emit("start_game");
     }
 
     function updateMinutes() {
-        const mins = parseInt(document.getElementById("roundMinutes").value);
+        const mins = parseInt(document.getElementById("roundMinutes")?.value || 3);
         socket.emit("set_round_minutes", { minutes: mins });
     }
 
+    function setRoundSeconds(seconds) {
+        socket.emit("set_round_seconds", { seconds });
+    }
+
+    function adjustGameTime(deltaSec) {
+        socket.emit("adjust_time", { delta: deltaSec });
+    }
+
+    function togglePause() {
+        socket.emit("toggle_pause");
+    }
+
     function revealResults() {
-        console.log("Reveal Results clicked");
         socket.emit("reveal_results");
     }
 
     function nextRound() {
-        console.log("Next Round clicked");
         socket.emit("next_round");
+    }
+
+    function confirmEndSession() {
+        if (confirm("End the session? Everyone will be sad!")) {
+            socket.emit("end_session");
+        }
     }
 
     socket.on("host_login_result", data => {
@@ -262,6 +359,7 @@
         const top = document.getElementById("topRight");
         const timer = document.getElementById("timer");
         const roundBox = document.getElementById("roundSettings");
+        const playerManage = document.getElementById("playerManagement");
 
         title.textContent =
             data.state === "waiting" ? "Waiting for host..." :
@@ -284,12 +382,16 @@
             joinArea.style.display = "none";
         }
 
-        if (data.roundMinutes) {
-            document.getElementById("roundMinutes").value = data.roundMinutes;
-        }
+        // Update round length display (seconds)
+        const roundLen = data.roundLengthSeconds !== undefined ? data.roundLengthSeconds : (data.roundMinutes ? data.roundMinutes * 60 : 180);
+        const mins = Math.floor(roundLen / 60);
+        const secs = String(roundLen % 60).padStart(2, '0');
+        document.getElementById("roundLengthDisplay").textContent = `${mins}:${secs}`;
 
         roundBox.style.display =
             (isHost && hasJoined && (data.state === "lobby" || data.state === "leaderboard")) ? "block" : "none";
+
+        playerManage.style.display = isHost ? "block" : "none";
 
         startBtn.style.display =
             (isHost && hasJoined && data.state === "lobby") ? "block" : "none";
@@ -298,9 +400,28 @@
         if (data.hostExists) {
             top.innerHTML = "";
             if (isHost) {
-                top.innerHTML = "<b>Host</b> <button onclick='socket.emit(\"end_session\")'>End Session</button>";
+                top.innerHTML = "<b>Host</b> <button onclick='confirmEndSession()'>End Session</button>";
+                // Add game controls only during game state
+                if (data.state === "game") {
+                    const controls = document.createElement('div');
+                    controls.style.display = 'inline-block';
+                    controls.style.marginLeft = '10px';
+                    controls.innerHTML = '<button id="decrease30">-30s</button> <button id="pauseBtn">Pause</button> <button id="increase30">+30s</button>';
+                    top.appendChild(controls);
+                    document.getElementById('decrease30').onclick = () => adjustGameTime(-30);
+                    document.getElementById('increase30').onclick = () => adjustGameTime(30);
+                    document.getElementById('pauseBtn').onclick = () => togglePause();
+                }
             } else if (hasJoined) {
-                top.innerHTML = "<button onclick='leave()'>Leave</button>";
+                if (data.state === "leaderboard") {
+                    if (!data.canContinue) {
+                        top.innerHTML = "<button onclick='leave()'>Return to Lobby</button>";
+                    } else {
+                        top.innerHTML = "<button onclick='leave()'>Leave</button>";
+                    }
+                } else {
+                    top.innerHTML = "<button onclick='leave()'>Leave</button>";
+                }
             }
         }
 
@@ -310,6 +431,11 @@
                 const mins = Math.floor(data.timeRemaining / 60);
                 const secs = String(data.timeRemaining % 60).padStart(2, "0");
                 timer.textContent = `${mins}:${secs}`;
+            }
+            // Update pause button text if present
+            const pauseBtn = document.getElementById("pauseBtn");
+            if (pauseBtn) {
+                pauseBtn.textContent = data.timerPaused ? "Play" : "Pause";
             }
         } else {
             timer.style.display = "none";
@@ -322,7 +448,13 @@
         const nextRoundBtn = document.getElementById("nextRoundBtn");
         const revealBtn = document.getElementById("revealBtn");
 
-        if (data.state === "leaderboard") {
+        // If player left mid-game/voting, show rejoin area instead of voting UI
+        if (!hasJoined && (data.state === "game" || data.state === "voting")) {
+            votingArea.style.display = "none";
+            playersList.style.display = "block";
+            leaderboardArea.style.display = "none";
+            joinArea.style.display = "block";
+        } else if (data.state === "leaderboard") {
             leaderboardArea.style.display = "block";
             votingArea.style.display = "none";
             playersList.style.display = "none";
@@ -409,6 +541,21 @@
             renderVoting(lastPlayers);
         }
     });
+
+    // default round length +/- buttons (in lobby/leaderboard)
+    document.getElementById('decreaseDefault30').onclick = () => {
+        const currentLen = parseInt(document.getElementById("roundLengthDisplay").textContent.split(':')[0]) * 60 
+                         + parseInt(document.getElementById("roundLengthDisplay").textContent.split(':')[1]);
+        const newLen = Math.max(60, Math.min(5 * 60, currentLen - 30));
+        socket.emit('set_round_seconds', { seconds: newLen });
+    };
+
+    document.getElementById('increaseDefault30').onclick = () => {
+        const currentLen = parseInt(document.getElementById("roundLengthDisplay").textContent.split(':')[0]) * 60 
+                         + parseInt(document.getElementById("roundLengthDisplay").textContent.split(':')[1]);
+        const newLen = Math.max(60, Math.min(5 * 60, currentLen + 30));
+        socket.emit('set_round_seconds', { seconds: newLen });
+    };
 
     socket.on("role", data => {
         if (data.role === "impostor") {
@@ -497,6 +644,65 @@
     socket.on("next_round_started", data => {
         // Reset the results flag when new round starts
         showingResults = false;
+    });
+
+    socket.on("leave_success", data => {
+        if (data?.kicked) {
+            // 🔑 Prevent auto-rejoin ONLY on the kicked client
+            localStorage.setItem("suppressAutoJoin", "1");
+        }
+
+        hasJoined = false;
+        alert(data?.kicked ? "You were removed from the game." : "You have left successfully");
+        location.reload();
+    });
+
+    socket.on("player_joined", data => {
+        alert(`${data.name} has joined`);
+    });
+
+    socket.on("impostor_left", data => {
+        if (!hasJoined) return;
+
+        if (data.kicked) {
+            alert(`${data.name} was REMOVED by the host.\n\nThey were the IMPOSTOR.\nGame returned to lobby.`);
+        } else {
+            alert(`${data.name} left the game.\n\nThey were the IMPOSTOR.\nGame returned to lobby.`);
+        }
+    });
+
+    socket.on("non_impostor_left", data => {
+        if (!hasJoined) return;
+
+        if (data.kicked) {
+            alert(`${data.name} was removed by the host.`);
+        } else {
+            alert(`${data.name} left. They weren't the impostor.`);
+        }
+    });
+
+    socket.on("player_left", data => {
+        if (!hasJoined) return;
+
+        if (data.kicked) {
+            alert(`${data.name} was removed by the host.`);
+        } else {
+            alert(`${data.name} has left.`);
+        }
+    });
+
+    socket.on("host_powerful", data => {
+        if (isHost) {
+            alert(`You can't kick yourself out!`);
+        }
+    });
+
+    socket.on("game_ended", data => {
+        if (!hasJoined) return;
+        const reason = data && data.reason ? data.reason : "Game ended.";
+        alert(reason);
+        // request state sync to show lobby
+        socket.emit("request_state_sync");
     });
 </script>
 </body>
