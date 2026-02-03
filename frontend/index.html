@@ -167,16 +167,12 @@
         playerId = localStorage.getItem("playerId") || playerId;
         
         if (!playerId) {
-            console.warn("renderVoting: No playerId available!");
             return;
         }
-
-        console.log("renderVoting: filtering out playerId=", playerId);
 
         players.forEach(p => {
             // Strict string comparison to filter out current player
             if (String(p.player_id) === String(playerId)) {
-                console.log("Filtering out player:", p.name, p.player_id);
                 return;
             }
 
@@ -244,6 +240,10 @@
         socket.emit("leave");
     }
 
+    function returnToLobby() {
+        socket.emit("return_to_lobby");
+    }
+
     function kickPlayer(playerId, playerName) {
         if (currentState === "voting") {
             alert("Cannot remove players during voting.");
@@ -300,6 +300,38 @@
         if (confirm("End the session? Everyone will be sad!")) {
             socket.emit("end_session");
         }
+    }
+
+    function renderLeaderboard(leaderboard) {
+        const leaderboardTable = document.getElementById("leaderboardTable");
+        // const rows = leaderboardTable.querySelectorAll("tr");
+        // rows.forEach((row, idx) => {
+        //     if (idx > 0) row.remove(); // Remove old rows
+        // });
+        leaderboardTable.querySelectorAll("tr:not(:first-child)").forEach(row => row.remove());
+
+        leaderboard.forEach((player, idx) => {
+            const tr = document.createElement("tr");
+            tr.style.borderBottom = "1px solid #ccc";
+            
+            const rankTd = document.createElement("td");
+            rankTd.textContent = idx + 1;
+            rankTd.style.padding = "10px";
+            
+            const nameTd = document.createElement("td");
+            nameTd.textContent = player.name;
+            nameTd.style.padding = "10px";
+            
+            const scoreTd = document.createElement("td");
+            scoreTd.textContent = player.score;
+            scoreTd.style.padding = "10px";
+            scoreTd.style.textAlign = "right";
+            
+            tr.appendChild(rankTd);
+            tr.appendChild(nameTd);
+            tr.appendChild(scoreTd);
+            leaderboardTable.appendChild(tr);
+        });
     }
 
     socket.on("host_login_result", data => {
@@ -395,6 +427,8 @@
 
         startBtn.style.display =
             (isHost && hasJoined && data.state === "lobby") ? "block" : "none";
+        
+        const nextRoundBtn = document.getElementById("nextRoundBtn");
 
         // Top-right controls
         if (data.hostExists) {
@@ -412,10 +446,13 @@
                     document.getElementById('increase30').onclick = () => adjustGameTime(30);
                     document.getElementById('pauseBtn').onclick = () => togglePause();
                 }
+                if (data.state === "leaderboard") {
+                    nextRoundBtn.style.display = data.canContinue ? "block" : "none";
+                }
             } else if (hasJoined) {
                 if (data.state === "leaderboard") {
                     if (!data.canContinue) {
-                        top.innerHTML = "<button onclick='leave()'>Return to Lobby</button>";
+                        top.innerHTML = "<button onclick='returnToLobby()'>Return to Lobby</button>";
                     } else {
                         top.innerHTML = "<button onclick='leave()'>Leave</button>";
                     }
@@ -445,7 +482,6 @@
         const remaining = document.getElementById("remainingVotes");
         const playersList = document.getElementById("players");
         const leaderboardArea = document.getElementById("leaderboardArea");
-        const nextRoundBtn = document.getElementById("nextRoundBtn");
         const revealBtn = document.getElementById("revealBtn");
 
         // If player left mid-game/voting, show rejoin area instead of voting UI
@@ -463,38 +499,11 @@
             
             // Populate leaderboard table if data provided
             if (data.leaderboard && data.leaderboard.length > 0) {
-                const leaderboardTable = document.getElementById("leaderboardTable");
-                const rows = leaderboardTable.querySelectorAll("tr");
-                rows.forEach((row, idx) => {
-                    if (idx > 0) row.remove();
-                });
-                
-                data.leaderboard.forEach((player, idx) => {
-                    const tr = document.createElement("tr");
-                    tr.style.borderBottom = "1px solid #ccc";
-                    
-                    const rankTd = document.createElement("td");
-                    rankTd.textContent = idx + 1;
-                    rankTd.style.padding = "10px";
-                    
-                    const nameTd = document.createElement("td");
-                    nameTd.textContent = player.name;
-                    nameTd.style.padding = "10px";
-                    
-                    const scoreTd = document.createElement("td");
-                    scoreTd.textContent = player.score;
-                    scoreTd.style.padding = "10px";
-                    scoreTd.style.textAlign = "right";
-                    
-                    tr.appendChild(rankTd);
-                    tr.appendChild(nameTd);
-                    tr.appendChild(scoreTd);
-                    leaderboardTable.appendChild(tr);
-                });
+                renderLeaderboard(data.leaderboard)
             }
             
             if (isHost) {
-                nextRoundBtn.style.display = "block";
+                nextRoundBtn.style.display = data.canContinue ? "block" : "none";
             }
         } else if (data.state === "voting") {
             if (currentState !== "voting") {
@@ -582,16 +591,6 @@
         const myVotedPlayer = lastPlayers.find(p => p.player_id === myVoted);
         const myVotedName = myVotedPlayer ? myVotedPlayer.name : "Unknown";
 
-        console.log("Round result debug:", {
-            myVoted,
-            myVotedName,
-            impostorId,
-            impostorName,
-            votedOutId,
-            votedOutName,
-            match: myVoted === impostorId
-        });
-
         // Use backend-provided counts for impostor messaging
         const numCorrect = data.numCorrect !== undefined ? data.numCorrect : 0;
         const numPossible = data.numPossible !== undefined ? data.numPossible : Math.max(0, lastPlayers.length - 1);
@@ -609,34 +608,7 @@
         }
 
         // Display leaderboard
-        const leaderboardTable = document.getElementById("leaderboardTable");
-        const rows = leaderboardTable.querySelectorAll("tr");
-        rows.forEach((row, idx) => {
-            if (idx > 0) row.remove(); // Remove old rows
-        });
-
-        leaderboard.forEach((player, idx) => {
-            const tr = document.createElement("tr");
-            tr.style.borderBottom = "1px solid #ccc";
-            
-            const rankTd = document.createElement("td");
-            rankTd.textContent = idx + 1;
-            rankTd.style.padding = "10px";
-            
-            const nameTd = document.createElement("td");
-            nameTd.textContent = player.name;
-            nameTd.style.padding = "10px";
-            
-            const scoreTd = document.createElement("td");
-            scoreTd.textContent = player.score;
-            scoreTd.style.padding = "10px";
-            scoreTd.style.textAlign = "right";
-            
-            tr.appendChild(rankTd);
-            tr.appendChild(nameTd);
-            tr.appendChild(scoreTd);
-            leaderboardTable.appendChild(tr);
-        });
+        renderLeaderboard(leaderboard)
 
         myVote = null;
     });

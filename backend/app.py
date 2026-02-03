@@ -15,16 +15,17 @@ MINIMUM_PLAYERS=3
 DEFAULT_DURATION=3
 MAX_DURATION=5
 WORDS = ["suntanning", "airport", "classroom"]
+DISCONNECT_GRACE_SECONDS = 5
 
-players = {}   # player_id -> {sid, name}
-player_names = {}  # player_id -> name (persists even after player leaves)
+players = {}        # player_id -> {sid, name}
+player_names = {}   # player_id -> name (persists even after player leaves)
 host_token = None
 host_sid = None
-state = "waiting"  # waiting | lobby | game | voting | leaderboard
-roles = {}  # player_id -> "impostor" | "crew"
-votes = {}        # voter_pid -> voted_pid
-scores = {}       # player_id -> points
-leaderboard = []  # list of {name, score} for display
+state = "waiting"   # waiting | lobby | game | voting | leaderboard
+roles = {}          # player_id -> "impostor" | "crew"
+votes = {}          # voter_pid -> voted_pid
+scores = {}         # player_id -> points
+leaderboard = []    # list of {name, score} for display
 current_word = None
 round_end_time = None
 timer_thread = None
@@ -33,6 +34,16 @@ round_minutes = DEFAULT_DURATION
 round_length_seconds = DEFAULT_DURATION * 60
 timer_paused = False
 paused_remaining = None
+
+
+def active_player_ids():
+    """Return list of currently connected player IDs."""
+    return [pid for pid, p in players.items() if p["sid"] is not None]
+
+
+def active_players():
+    """Return dict of active players only."""
+    return {pid: p for pid, p in players.items() if p["sid"] is not None}
 
 
 def get_player_by_sid(sid):
@@ -47,7 +58,7 @@ def active_player_count():
     return len([p for p in players.values() if p["sid"] is not None])
 
 
-def reset_game_to_lobby_no_scoring(reason=None):
+def reset_to_lobby(reason=None):
     # Reset the game to lobby without awarding scores. Broadcast reason if provided.
     global state, roles, votes, current_word
     state = "lobby"
@@ -56,8 +67,7 @@ def reset_game_to_lobby_no_scoring(reason=None):
     current_word = None
     if reason:
         socketio.emit("game_ended", {"reason": reason})
-    emit_players()
-    emit_state()
+    request_state_sync()
 
 
 def emit_state():
@@ -67,10 +77,7 @@ def emit_state():
     if state == "voting":
         # Only count active players (sid is not None) for voting
         # remaining = active_player_count() - len(votes)
-        remaining = len([
-            pid for pid, p in players.items()
-            if p["sid"] is not None and pid not in votes
-        ])
+        remaining = len([pid for pid in active_player_ids() if pid not in votes])
 
     if state == "game" and round_end_time:
         time_remaining = max(0, int(round_end_time - time.time()))
@@ -83,7 +90,8 @@ def emit_state():
         "remainingVotes": remaining,
         "timeRemaining": time_remaining,
         "timerPaused": timer_paused,
-        "pausedRemaining": paused_remaining
+        "pausedRemaining": paused_remaining,
+        "disconnect_time": None
     }
 
     # Include leaderboard data when in leaderboard state
@@ -105,6 +113,20 @@ def emit_players():
             if p["sid"] is not None and p["name"] is not None
         ]
     })
+
+
+def enforce_min_players_with_grace():
+    now = time.time()
+
+    # If anyone disconnected recently, wait
+    for p in players.values():
+        if p.get("disconnect_time"):
+            if now - p["disconnect_time"] < DISCONNECT_GRACE_SECONDS:
+                return  # still waiting for possible rejoin
+
+    if state in ("game", "voting", "leaderboard"):
+        if active_player_count() < MINIMUM_PLAYERS:
+            reset_to_lobby("Not enough players - game ended")
 
 
 def start_round_timer():
@@ -148,8 +170,31 @@ def transition_to_voting():
     global state, votes
     votes.clear()
     state = "voting"
-    emit_state()
-    emit_players()
+    request_state_sync()
+
+
+def compute_results():
+    # count votes
+    tally = {}
+    for voted in votes.values():
+        tally[voted] = tally.get(voted, 0) + 1
+
+    if not tally:
+        return None
+
+    voted_out = max(tally.items(), key=lambda x: x[1])[0]
+
+    impostor_pid = None
+    for pid, role in roles.items():
+        if role == "impostor":
+            impostor_pid = pid
+            break
+
+    return {
+        "votedOut": voted_out,
+        "impostor": impostor_pid,
+        "correct": voted_out == impostor_pid
+    }
 
 
 @socketio.on("connect")
@@ -165,6 +210,7 @@ def connect():
 
     if pid in players:
         players[pid]["sid"] = request.sid
+        players[pid].pop("disconnect_time", None)
         has_joined = True
     else:
         has_joined = False
@@ -175,8 +221,7 @@ def connect():
         "playerId": pid
     }, to=request.sid)
 
-    emit_state()
-    emit_players()
+    request_state_sync()
 
 
 @socketio.on("disconnect")
@@ -185,23 +230,21 @@ def disconnect():
     # Don't broadcast leave messages or remove them
     # They can rejoin with same playerId
     pid = get_player_by_sid(request.sid)
-    if pid:
-        if state == "voting":
-            # Mark player as disconnected, but DO NOTHING ELSE
-            players[pid]["sid"] = None
-            emit_state()
-            return
-            # show message they left
+    if not pid: return
+    players[pid]["sid"] = None
+    players[pid]["disconnect_time"] = time.time()
+    emit_state()
+    # Start a delayed enforcement check after grace period
+    if state in ("voting", "leaderboard"): return
+    def delayed_enforce():
+        time.sleep(DISCONNECT_GRACE_SECONDS)
+        # If player is still disconnected, enforce minimum player rules
+        player = players.get(pid)
+        if player and player.get("sid") is None:
+            enforce_min_players_with_grace()
+            request_state_sync()
 
-        for p in players.values():
-            if p["sid"] == request.sid:
-                p["sid"] = None
-        if pid in votes:
-            del votes[pid]
-        emit_players()
-        # If the game is active and too few players remain, reset to lobby
-        if state in ("game", "leaderboard") and active_player_count() < MINIMUM_PLAYERS:
-            reset_game_to_lobby_no_scoring("Not enough players - game ended")
+    threading.Thread(target=delayed_enforce, daemon=True).start()
 
 
 @socketio.on("host_login")
@@ -238,7 +281,7 @@ def join(data):
     # restore existing player
     if pid in players:
         was_disconnected = players[pid]["sid"] is None
-        
+
         # Update name if they provided a new one and it's valid
         new_name = data.get("name")
         if new_name:
@@ -254,6 +297,7 @@ def join(data):
                 player_names[pid] = new_name
         
         players[pid]["sid"] = request.sid
+        players[pid].pop("disconnect_time", None)
         socketio.emit("join_result", {
             "success": True,
             "playerId": pid
@@ -288,11 +332,8 @@ def join(data):
             ]
             leaderboard.sort(key=lambda x: x["score"], reverse=True)
         
-        emit_players()
-        emit_state()
-        # If the game is active and too few players remain, reset to lobby
-        if state in ("game", "voting", "leaderboard") and active_player_count() < MINIMUM_PLAYERS:
-            reset_game_to_lobby_no_scoring("Not enough players - game ended")
+        request_state_sync()
+        enforce_min_players_with_grace()
         return
 
     if state == "waiting":
@@ -335,8 +376,7 @@ def join(data):
     # Broadcast join message to all OTHER players
     socketio.emit("player_joined", {"name": name}, skip_sid=request.sid)
 
-    emit_players()
-    emit_state()
+    request_state_sync()
 
 
 @socketio.on("leave")
@@ -397,8 +437,7 @@ def leave(data=None):
         # Broadcast to all OTHER clients that impostor left
         socketio.emit("impostor_left", {"name": player_name, "kicked": is_kicked}, skip_sid=request.sid)
         
-        emit_players()
-        emit_state()
+        request_state_sync()
     else:
         # Normal leave - keep player in dict but set sid to None
         # This allows them to rejoin with same playerId and merge scores
@@ -410,12 +449,21 @@ def leave(data=None):
         else:
             socketio.emit("player_left", {"name": player_name, "kicked": is_kicked}, skip_sid=request.sid)
         
-        emit_players()
-        emit_state()
-        
-        # If the game is active and too few players remain, reset to lobby
-        if state in ("game", "voting", "leaderboard") and active_player_count() < MINIMUM_PLAYERS:
-            reset_game_to_lobby_no_scoring("Not enough players - game ended")
+        request_state_sync()
+        enforce_min_players_with_grace()
+
+
+@socketio.on("return_to_lobby")
+def return_to_lobby():
+    # Only allow if game is currently showing leaderboard and cannot continue
+    if state != "leaderboard":
+        return
+
+    if active_player_count() >= MINIMUM_PLAYERS:
+        return
+
+    # Do NOT remove player, just reset game state
+    reset_to_lobby("Returned to lobby")
 
 
 @socketio.on("start_game")
@@ -444,7 +492,7 @@ def start_game():
     current_word = random.choice(WORDS)
 
     # Only pick impostor from active players (sid is not None)
-    active_pids = [pid for pid, p in players.items() if p["sid"] is not None]
+    active_pids = active_player_ids()
     if not active_pids:
         return
     impostor_pid = random.choice(active_pids)
@@ -465,7 +513,6 @@ def start_game():
                 )
 
 
-# Voting phase logic
 @socketio.on("cast_vote")
 def cast_vote(data):
     global votes
@@ -486,30 +533,6 @@ def cast_vote(data):
     # overwrite allowed
     votes[voter_pid] = voted_pid
     emit_state()
-
-
-def compute_results():
-    # count votes
-    tally = {}
-    for voted in votes.values():
-        tally[voted] = tally.get(voted, 0) + 1
-
-    if not tally:
-        return None
-
-    voted_out = max(tally.items(), key=lambda x: x[1])[0]
-
-    impostor_pid = None
-    for pid, role in roles.items():
-        if role == "impostor":
-            impostor_pid = pid
-            break
-
-    return {
-        "votedOut": voted_out,
-        "impostor": impostor_pid,
-        "correct": voted_out == impostor_pid
-    }
 
 
 @socketio.on("reveal_results")
@@ -711,8 +734,7 @@ def end_session():
         current_word = None
         scores.clear()
         leaderboard = []
-        emit_state()
-        emit_players()
+        request_state_sync()
 
 
 @socketio.on("next_round")
@@ -737,7 +759,7 @@ def next_round():
     current_word = random.choice(WORDS)
 
     # Only pick impostor from active players (sid is not None)
-    active_pids = [pid for pid, p in players.items() if p["sid"] is not None]
+    active_pids = active_player_ids()
     if not active_pids:
         return
     impostor_pid = random.choice(active_pids)
@@ -770,4 +792,6 @@ def request_state_sync():
 if __name__ == "__main__":
     # TODO: add chat feature
     # TODO: add CSS
+    # change password
+    # add words api
     socketio.run(app, host="0.0.0.0", port=5001)
