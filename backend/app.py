@@ -5,17 +5,67 @@ import random
 import uuid
 import threading
 import time
+import json
+import os
+import bcrypt
+from dotenv import load_dotenv
+
+load_dotenv()
+HOST_PASSWORD_HASH = os.getenv("HOST_PASSWORD_HASH")
+
+MASTER_WORDS = [
+"Sunflower","Fruits","Camera","Liquid","Book","Ocean","Apple","Planet","Baby","Pail",
+"Cabbage","Towel","Eyeglasses","Pumpkins","Tree","Breakfast","Stairs","White","Stirrup","Beach",
+"Berries","Lemurs","Knife","Dessert","Winter","Flames","Gymnastics","Wedding","Skates","Pipe",
+"Peony","Storm","Chocolate","Pineapple","Cloud","Glass","Strawberry","Mushrooms","Broccoli","Sun",
+"Straw","Figurines","Scarf","Thought","Wallet","Hedgehog","Window","Vitamins","Spices","Groundnut",
+"Equilibrium","Door","Nebula","Banana","Smile","Wheel","Tea","Bear","Nautilus","Tuber",
+"Lavender","Snow","Castle","Police","Knowledge","Pizza","Ink","Bed","Selfie","Strings",
+"Eclipse","Letter","Tin","Embers","Balloon","Foot","Caviar","Buffet","Bunker","Rock",
+"Antennas","Blueberries","Porcelain","Spirit","Apple","Canyon","Taxicab","Reptile","Shadow","Overall",
+"Crown","Atmosphere","Insulator","Show","One","Mammal","Pieces","Hay","Reflection","Water",
+"Bench","Firewood","Fuel","Wind","Persimmon","Bird","Tarmac","Small","Airport","Baptism",
+"Cat","Team","Sheep","Frost","Speed","Instrument","Number","Sloth","Fork","Honeymoon",
+"Wheelbarrow","Grooming","Feeding","Geometry","Trail","Lighthouse","Canvas","Relaxation","Silhouette","Slope",
+"Pink","Vacation","Peel","Scales","Compass","Time","Net","Cushions","Basket","Memories",
+"Plastic","Fish","Diamond","Precious","Cheese","Seahorse","Sack","Finger","Laser","Salt",
+"Eyebrow","Syrup","Tomatoes","Buddhism","Sandwich","Juice","Policeman","Sprinkler","Hotel","Hobby",
+"Strawberry","Kiss","Feet","Waist","Candle","Trumpet","Pond","Exotic","Landmark","Green",
+"Bridge","Clothes","Root","Flatiron","Artichoke","Fountain","Atlas","Christmas","Eiffel","Artist",
+"Supplies","Dragonfly","Pendulum","Book","Gift","Vanilla","Egypt","Horse","Two","Mustard",
+"Puppy","Purée","Rust","Stripes","Stick","Programming","City","Structure","Heart","Result",
+"Dragon","Potter","Predator","Western","Sky","Roof","Indoor","Bite","Spiral","Ornithology",
+"Nest","Carbohydrate","Twin","Wings","Grass","Seeds","Chair","Corset","Signs","Fruit",
+"Honeycomb","Face","Chain","Sweet","Stunt","Back","Agriculture","Beans","Sauce","Knitting",
+"Waves","Fur","Transparency","Aerial","Square","Tail","Ferns","Enclosure","Cake","White",
+"Tombstone","Dress","Windy","Poppy","Bread","Turret","Dough","Studio","Tasting","Curls",
+"Crossed","Lettuce","Leaves","Duck","Organ","Inheritance","Latitude","Dots","Pollution","Eye",
+"Lid","Hand","Game","Toxic","Vinyl","Plate","Damages","Elements","Open","Repair",
+"Sushi","Autumn","Sun","Tree","Asian","Kitchen","Tamarind","Poultry","Cage","Chess",
+"Headphones","Apartment","Pump","Shoes","Promise","Puppet","Quinoa","Teeth","Pillars","Bear",
+"Cap","Baby","Lemon","Floor","Mask","Beverage","Almonds","Vinegar","Prayer","Scavenger",
+"Preserve","Butter","Look","Hero","Music","Harvesting","Stroller","Cheese","Bus","Cartoons",
+"Shoes","Scent","Ring","Bracelet","Owl","Aisle","Fishing","Tooth","Ivory","Ball",
+"Hunter","Camel","Beanie","Wool","Horizon","Empty","Sandal","Gloves","Egg","Balloon",
+"Elephant","Chips","Skin","Crystal","Train","Belief","Pasta","Shed","Whiskers","Roof",
+"Florist","Kitchen","Stalactite","Apple","Russia","Cherry","Door","Tomato","Packaging","Bakery",
+"Temperature","Hair","Souvenirs","Pouring","Fog","Champagne","Fig","Harp","Surf","Rice",
+"Archive","Macaron","Insect","Solo","Horse","Ribs","Longship","Rodent","Thinking","England",
+"Carrot","Pocket","Gnome","Olive","Capacitor","Farm","Childhood","Copper","Cross","Kitchen",
+"Danger","Future","Mane","Gymnastics","Pattern","Probability","Professional","Moon","Hat","Graffiti",
+"Cards","Shorts","Space","Star","Music","Takeoff","Surface","Bird","Tradition","Visor"
+]
+WORDS_FILE = "backend/words.json"
+RESET_THRESHOLD = 200
+
+MINIMUM_PLAYERS=3
+DEFAULT_DURATION=3
+MAX_DURATION=5
+DISCONNECT_GRACE_SECONDS = 5
 
 app = Flask(__name__)
 CORS(app)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
-
-HOST_PASSWORD = "1"
-MINIMUM_PLAYERS=3
-DEFAULT_DURATION=3
-MAX_DURATION=5
-WORDS = ["suntanning", "airport", "classroom"]
-DISCONNECT_GRACE_SECONDS = 5
 
 players = {}        # player_id -> {sid, name}
 player_names = {}   # player_id -> name (persists even after player leaves)
@@ -34,6 +84,47 @@ round_minutes = DEFAULT_DURATION
 round_length_seconds = DEFAULT_DURATION * 60
 timer_paused = False
 paused_remaining = None
+
+
+def load_words():
+    # If file doesn't exist, create it
+    if not os.path.exists(WORDS_FILE):
+        reset_words_file()
+
+    with open(WORDS_FILE, "r") as f:
+        words = json.load(f)
+
+    # Auto reset if pool too small
+    if len(words) < RESET_THRESHOLD:
+        reset_words_file()
+        words = MASTER_WORDS.copy()
+
+    return words
+
+
+def reset_words_file():
+    with open(WORDS_FILE, "w") as f:
+        json.dump(MASTER_WORDS, f)
+
+
+def remove_word(word):
+    words = load_words()
+
+    if word in words:
+        words.remove(word)
+
+        with open(WORDS_FILE, "w") as f:
+            json.dump(words, f)
+
+
+def get_random_word():
+    words = load_words()
+
+    word = random.choice(words)
+
+    remove_word(word)
+
+    return word
 
 
 def active_player_ids():
@@ -255,7 +346,7 @@ def host_login(data):
         socketio.emit("host_login_result", {"success": False}, to=request.sid)
         return
 
-    if data.get("password") != HOST_PASSWORD:
+    if not bcrypt.checkpw(data.get("password", "").encode(), HOST_PASSWORD_HASH.encode()):
         socketio.emit("host_login_result", {"success": False}, to=request.sid)
         return
 
@@ -468,49 +559,7 @@ def return_to_lobby():
 
 @socketio.on("start_game")
 def start_game():
-    global state, roles, current_word
-
-    if request.sid != host_sid:
-        return
-
-    host_pid = get_player_by_sid(request.sid)
-    if host_pid is None:
-        return
-
-    if len(players) < MINIMUM_PLAYERS:
-        return
-
-    votes.clear()
-    state = "game"
-    emit_state()
-
-    global timer_thread
-    timer_thread = threading.Thread(target=start_round_timer, daemon=True)
-    timer_thread.start()
-
-    roles = {}
-    current_word = random.choice(WORDS)
-
-    # Only pick impostor from active players (sid is not None)
-    active_pids = active_player_ids()
-    if not active_pids:
-        return
-    impostor_pid = random.choice(active_pids)
-
-    for pid in players:
-        roles[pid] = "impostor" if pid == impostor_pid else "crew"
-
-    for pid, role in roles.items():
-        sid = players[pid]["sid"]
-        if sid:
-            if role == "impostor":
-                socketio.emit("role", {"role": "impostor"}, to=sid)
-            else:
-                socketio.emit(
-                    "role",
-                    {"role": "crew", "word": current_word},
-                    to=sid
-                )
+    new_game(True)
 
 
 @socketio.on("cast_vote")
@@ -739,24 +788,34 @@ def end_session():
 
 @socketio.on("next_round")
 def next_round():
-    global state, roles, current_word
+    new_game(False)
+
+
+def new_game(is_initial):
+    global state, roles, current_word, timer_thread
 
     if request.sid != host_sid:
         return
+    
+    if is_initial:
+        host_pid = get_player_by_sid(request.sid)
+        if host_pid is None:
+            return
 
-    if state not in ("lobby", "leaderboard"):
-        return
+        if len(players) < MINIMUM_PLAYERS:
+            return
+    else:
+        if state not in ("lobby", "leaderboard"):
+            return
 
     votes.clear()
     state = "game"
-    emit_state()
 
-    global timer_thread
     timer_thread = threading.Thread(target=start_round_timer, daemon=True)
     timer_thread.start()
 
     roles = {}
-    current_word = random.choice(WORDS)
+    current_word = get_random_word()
 
     # Only pick impostor from active players (sid is not None)
     active_pids = active_player_ids()
@@ -767,8 +826,9 @@ def next_round():
     for pid in players:
         roles[pid] = "impostor" if pid == impostor_pid else "crew"
 
-    # Emit signal that next round has started
-    socketio.emit("next_round_started", {})
+    if not is_initial:
+        # Emit signal that next round has started
+        socketio.emit("next_round_started", {})
 
     for pid, role in roles.items():
         sid = players[pid]["sid"]
@@ -776,11 +836,9 @@ def next_round():
             if role == "impostor":
                 socketio.emit("role", {"role": "impostor"}, to=sid)
             else:
-                socketio.emit(
-                    "role",
-                    {"role": "crew", "word": current_word},
-                    to=sid
-                )
+                socketio.emit("role", {"role": "crew", "word": current_word}, to=sid)
+    
+    emit_state()
 
 
 @socketio.on("request_state_sync")
@@ -792,6 +850,4 @@ def request_state_sync():
 if __name__ == "__main__":
     # TODO: add chat feature
     # TODO: add CSS
-    # change password
-    # add words api
     socketio.run(app, host="0.0.0.0", port=5001)
