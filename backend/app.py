@@ -10,7 +10,8 @@ import os
 import bcrypt
 from dotenv import load_dotenv
 
-load_dotenv()
+# load_dotenv()
+load_dotenv("/etc/secrets/.env")
 HOST_PASSWORD_HASH = os.getenv("HOST_PASSWORD_HASH")
 
 MASTER_WORDS = [
@@ -55,7 +56,8 @@ MASTER_WORDS = [
 "Danger","Future","Mane","Gymnastics","Pattern","Probability","Professional","Moon","Hat","Graffiti",
 "Cards","Shorts","Space","Star","Music","Takeoff","Surface","Bird","Tradition","Visor"
 ]
-WORDS_FILE = "backend/words.json"
+# WORDS_FILE = "backend/words.json"
+WORDS_FILE = "words.json"
 RESET_THRESHOLD = 200
 
 MINIMUM_PLAYERS=3
